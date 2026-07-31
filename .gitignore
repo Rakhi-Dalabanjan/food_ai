@@ -1,0 +1,28 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Uploads
+uploads/
+
+# Database
+*.db
+
+# Models
+models/*.pkl
+models/*.joblib
+models/*.h5
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# VS Code
+.vscode/
+
+# Reports
+reports/
+
+# Env
+.env
