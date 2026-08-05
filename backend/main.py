@@ -19,6 +19,7 @@ from .ml_pipeline import (
     QUALITY_FEATURES,
     load_models,
     get_risk_level,
+    load_thresholds,
 )
 
 def run_db_migrations(engine):
@@ -648,3 +649,14 @@ def get_metrics(db: Session = Depends(get_db)):
 def get_logs(db: Session = Depends(get_db)):
     logs = db.query(PredictionLog).order_by(PredictionLog.id.desc()).limit(100).all()
     return logs
+
+
+@app.get("/thresholds")
+def get_thresholds():
+    thresholds = load_thresholds()
+    if thresholds is None:
+        raise HTTPException(
+            status_code=500,
+            detail="Quality thresholds configuration could not be loaded."
+        )
+    return thresholds
