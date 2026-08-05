@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import {
   UploadCloud,
   FileType,
@@ -26,6 +26,39 @@ const CsvPrediction = () => {
   const [mapping, setMapping] = useState({});
   const [isAutoMapped, setIsAutoMapped] = useState(false);
   const fileInputRef = useRef(null);
+
+  const [globalProductType, setGlobalProductType] = useState("Retorted");
+  const [globalPackageStatus, setGlobalPackageStatus] = useState("Normal");
+  const [thresholds, setThresholds] = useState(null);
+
+  useEffect(() => {
+    axios
+      .get(`${API}/thresholds`)
+      .then((res) => {
+        setThresholds(res.data);
+      })
+      .catch((err) => {
+        console.error("Failed to load thresholds config in CsvPrediction, using static defaults.", err);
+      });
+  }, []);
+
+  const productTypesList = thresholds?.product_types
+    ? Object.keys(thresholds.product_types).map((key) => ({
+        key,
+        display_name: thresholds.product_types[key].display_name,
+      }))
+    : [
+        { key: "retorted", display_name: "Retorted Products" },
+        { key: "unretorted", display_name: "Unretorted Products" },
+      ];
+
+  const packageStatusList = thresholds?.package_statuses || [
+    "Normal",
+    "Seal_Failure",
+    "Leakage",
+    "Damaged_Package",
+    "Bulged",
+  ];
 
   const getHealthRecommendation = (level) => {
     switch (level) {
@@ -74,6 +107,8 @@ const CsvPrediction = () => {
     const formData = new FormData();
     formData.append("file", f);
     formData.append("mapping", JSON.stringify(m));
+    formData.append("product_type", globalProductType);
+    formData.append("package_status", globalPackageStatus);
     try {
       const res = await axios.post(`${API}/predict`, formData, {
         headers: { "Content-Type": "multipart/form-data" },
@@ -303,6 +338,59 @@ const CsvPrediction = () => {
 
       {preview && !loading && !results && (
         <div className="space-y-6 animate-in slide-in-from-bottom-4">
+          
+          {/* Global Defaults Settings */}
+          <div className="bg-surface rounded-xl border border-white/5 p-6 bg-white/[0.02] no-print">
+            <h4 className="text-sm font-bold uppercase tracking-wider text-slate-300 mb-2">Global Batch Defaults</h4>
+            <p className="text-xs text-slate-500 mb-6 font-medium">
+              These defaults are applied only when Product_Type or Package_Status are not supplied by the uploaded dataset.
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="space-y-2">
+                <label className="text-[12px] font-bold text-slate-400 uppercase tracking-[0.5px]">Global Product Type</label>
+                <div className="flex gap-2">
+                  {productTypesList.map((typeObj) => {
+                    const active = globalProductType.toLowerCase() === typeObj.key.toLowerCase();
+                    return (
+                      <button
+                        key={typeObj.key}
+                        type="button"
+                        onClick={() => {
+                          setGlobalProductType(typeObj.key === "retorted" ? "Retorted" : "Unretorted");
+                          setResults(null);
+                        }}
+                        className={`flex-1 h-[38px] rounded-lg font-bold text-[11px] uppercase tracking-wider border transition-all ${
+                          active
+                            ? "bg-emerald-500 text-white border-emerald-500 shadow-md shadow-emerald-500/10"
+                            : "bg-slate-900/40 text-slate-400 border-white/10 hover:bg-slate-900/60"
+                        }`}
+                      >
+                        {typeObj.display_name}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="space-y-2">
+                <label className="text-[12px] font-bold text-slate-400 uppercase tracking-[0.5px]">Global Package Status</label>
+                <select
+                  value={globalPackageStatus}
+                  onChange={(e) => {
+                    setGlobalPackageStatus(e.target.value);
+                    setResults(null);
+                  }}
+                  className="w-full bg-slate-950/40 border border-white/10 rounded-lg px-3 text-[#F3F7FF] transition-all h-[38px] text-xs font-bold focus:border-emerald-500 focus:outline-none"
+                >
+                  {packageStatusList.map((status) => (
+                    <option key={status} value={status} className="bg-slate-900 text-slate-200">
+                      {status.replace("_", " ")}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </div>
+
           {isAutoMapped && (
             <div className="bg-emerald-500/10 border border-emerald-500/20 p-6 rounded-xl flex flex-col md:flex-row items-center justify-between gap-4">
               <div className="flex items-center gap-4">
@@ -342,41 +430,44 @@ const CsvPrediction = () => {
               </div>
               <div className="p-6">
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-x-12 gap-y-6">
-                  {preview.features.map((feature) => (
-                    <div key={feature} className="flex flex-col gap-1.5">
-                      <div className="flex justify-between items-center px-1">
-                        <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-                          Model Field
-                        </span>
-                        <span className="text-[11px] font-bold text-emerald-500 uppercase tracking-wider">
-                          Uploaded Column
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <div className="flex-1 bg-slate-900/50 border border-white/5 rounded-lg px-3 py-2 text-sm text-slate-300 truncate">
-                          {feature}
+                  {[...(preview.features || []), "Product_Type", "Package_Status"].map((feature) => {
+                    const isMetadata = ["Product_Type", "Package_Status"].includes(feature);
+                    return (
+                      <div key={feature} className="flex flex-col gap-1.5">
+                        <div className="flex justify-between items-center px-1">
+                          <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                            {isMetadata ? "Metadata Field" : "Model Field"}
+                          </span>
+                          <span className="text-[11px] font-bold text-emerald-500 uppercase tracking-wider">
+                            Uploaded Column
+                          </span>
                         </div>
-                        <div className="text-slate-600">→</div>
-                        <select
-                          className="flex-1 bg-slate-800 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500 transition-colors"
-                          value={mapping[feature] || ""}
-                          onChange={(e) =>
-                            setMapping({
-                              ...mapping,
-                              [feature]: e.target.value,
-                            })
-                          }
-                        >
-                          <option value="">Skip / None</option>
-                          {preview.columns.map((col) => (
-                            <option key={col} value={col}>
-                              {col}
-                            </option>
-                          ))}
-                        </select>
+                        <div className="flex items-center gap-3">
+                          <div className="flex-1 bg-slate-900/50 border border-white/5 rounded-lg px-3 py-2 text-sm text-slate-300 truncate">
+                            {feature.replace(/_/g, " ")}
+                          </div>
+                          <div className="text-slate-600">→</div>
+                          <select
+                            className="flex-1 bg-slate-800 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500 transition-colors"
+                            value={mapping[feature] || ""}
+                            onChange={(e) =>
+                              setMapping({
+                                ...mapping,
+                                [feature]: e.target.value,
+                              })
+                            }
+                          >
+                            <option value="">Skip / None</option>
+                            {preview.columns.map((col) => (
+                              <option key={col} value={col}>
+                                {col}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
 
                 <div className="mt-10 flex justify-center">
@@ -449,13 +540,18 @@ const CsvPrediction = () => {
                     <th className="px-6 py-4 font-semibold">#</th>
                     {results.length > 0 &&
                       Object.keys(results[0])
-                        .filter((col) => !["Shelf_Life", "Risk_Level"].includes(col) && !col.startsWith("Estimated_"))
+                        .filter((col) => !["Shelf_Life", "Risk_Level", "Product_Type", "Package_Status", "Oxidation_Rate"].includes(col) && !col.startsWith("Estimated_"))
                         .slice(0, 5)
                         .map((col) => (
                           <th key={col} className="px-6 py-4 font-semibold">
                             {col.replace(/_/g, " ")}
                           </th>
                         ))}
+                    <th className="px-6 py-4 font-semibold">Product Type</th>
+                    <th className="px-6 py-4 font-semibold">Package Status</th>
+                    {results.length > 0 && results[0].Oxidation_Rate !== undefined && (
+                      <th className="px-6 py-4 font-semibold">Oxidation Rate</th>
+                    )}
                     <th className="px-6 py-4 font-semibold text-emerald-400">Predicted Shelf Life</th>
                     <th className="px-6 py-4 font-semibold">Risk Level</th>
                     <th className="px-6 py-4 font-semibold">Health & Quality Analysis</th>
@@ -465,7 +561,7 @@ const CsvPrediction = () => {
                   {paginatedResults.map((row, idx) => {
                     const globalIdx = startIndex + idx + 1;
                     const inputCols = Object.keys(row).filter(
-                      (col) => !["Shelf_Life", "Risk_Level"].includes(col) && !col.startsWith("Estimated_")
+                      (col) => !["Shelf_Life", "Risk_Level", "Product_Type", "Package_Status", "Oxidation_Rate"].includes(col) && !col.startsWith("Estimated_")
                     ).slice(0, 5);
                     const health = getHealthRecommendation(row?.Risk_Level);
 
@@ -480,6 +576,15 @@ const CsvPrediction = () => {
                             {typeof row[col] === "number" ? row[col].toFixed(2) : String(row[col] ?? "N/A")}
                           </td>
                         ))}
+                        <td className="px-6 py-4 text-slate-300 font-medium">{row.Product_Type || "N/A"}</td>
+                        <td className="px-6 py-4 text-slate-300 font-medium">{row.Package_Status || "N/A"}</td>
+                        {row.Oxidation_Rate !== undefined && (
+                          <td className="px-6 py-4 text-slate-300 font-medium">
+                            {row.Oxidation_Rate !== null && row.Oxidation_Rate !== ""
+                              ? Number(row.Oxidation_Rate).toFixed(4)
+                              : "N/A"}
+                          </td>
+                        )}
                         <td className="px-6 py-4 text-lg font-bold text-emerald-400">
                           {typeof row.Shelf_Life === "number" ? row.Shelf_Life.toFixed(1) : (row.Shelf_Life || "N/A")}{" "}
                           <span className="text-sm font-normal text-slate-400">
