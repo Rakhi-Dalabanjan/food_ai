@@ -1,14 +1,14 @@
 import { useState, useRef, useEffect } from "react";
 import {
   UploadCloud,
-  FileType,
   CheckCircle2,
   AlertCircle,
   RefreshCw,
   Download,
-  Printer,
   ChevronLeft,
   ChevronRight,
+  FileType,
+  Printer,
 } from "lucide-react";
 import axios from "axios";
 

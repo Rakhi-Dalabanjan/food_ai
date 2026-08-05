@@ -9,6 +9,8 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 import joblib
 import os
 import json
+import functools
+import logging
 from .database import SessionLocal
 from .models import ModelMetrics
 
@@ -58,9 +60,9 @@ def safe_float(val, default=0.0):
         return default
 
 
+@functools.lru_cache(maxsize=1)
 def load_thresholds():
     """Loads and parses the quality_thresholds.json file dynamically."""
-    import json
     config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "quality_thresholds.json")
     if not os.path.exists(config_path):
         config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "quality_thresholds.json")
@@ -68,7 +70,8 @@ def load_thresholds():
         with open(config_path, "r") as f:
             return json.load(f)
     except Exception as e:
-        print(f"Error loading thresholds configuration: {e}")
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error loading thresholds configuration: {e}")
         return None
 
 
@@ -468,14 +471,18 @@ def get_row_risk_level(shelf_life: float, row, product_type="retorted") -> str:
 
 
 def predict_data(df: pd.DataFrame, product_type="retorted"):
-    pt = str(product_type).lower()
-    if pt not in ["retorted", "unretorted"]:
-        pt = "retorted"
+    if isinstance(product_type, (list, tuple, pd.Series, np.ndarray)):
+        pts = [str(pt).lower() if str(pt).lower() in ["retorted", "unretorted"] else "retorted" for pt in product_type]
+    else:
+        pt_single = str(product_type).lower() if str(product_type).lower() in ["retorted", "unretorted"] else "retorted"
+        pts = [pt_single] * len(df)
 
     thresholds_config = load_thresholds()
     if not thresholds_config:
         raise Exception("Configuration thresholds not found.")
-    pt_config = thresholds_config["product_types"][pt]
+    
+    # Primary default config
+    pt_config = thresholds_config["product_types"][pts[0] if len(pts) > 0 else "retorted"]
 
     quality_pipeline, shelf_life_pipeline = load_models()
     if shelf_life_pipeline is None:
@@ -489,13 +496,13 @@ def predict_data(df: pd.DataFrame, product_type="retorted"):
         if f not in working_df.columns:
             working_df[f] = np.nan
 
-    # 1. Fill missing BASE_FEATURES with Defaults first
-    base_defaults = pt_config["defaults"]
-    for feat, default_val in base_defaults.items():
-        if feat in working_df.columns:
-            working_df[feat] = working_df[feat].fillna(default_val)
-        else:
-            working_df[feat] = default_val
+    # 1. Fill missing BASE_FEATURES with Defaults first per-row if needed
+    for i, idx in enumerate(working_df.index):
+        row_pt = pts[i] if i < len(pts) else "retorted"
+        row_defaults = thresholds_config["product_types"][row_pt]["defaults"]
+        for feat, default_val in row_defaults.items():
+            if pd.isnull(working_df.loc[idx, feat]):
+                working_df.loc[idx, feat] = default_val
 
     # 2. Generate missing QUALITY_FEATURES using quality_pipeline
     missing_quality = [qf for qf in QUALITY_FEATURES if working_df[qf].isnull().any()]
@@ -579,13 +586,13 @@ def predict_data(df: pd.DataFrame, product_type="retorted"):
                     if pd.notnull(val):
                         working_df.loc[idx, key] = float(np.clip(val, low, high))
 
-    # 3. Fill any remaining missing quality features with Defaults
-    quality_defaults = pt_config["quality_defaults"]
-    for feat, default_val in quality_defaults.items():
-        if feat in working_df.columns:
-            working_df[feat] = working_df[feat].fillna(default_val)
-        else:
-            working_df[feat] = default_val
+    # 3. Fill any remaining missing quality features with Defaults per-row
+    for i, idx in enumerate(working_df.index):
+        row_pt = pts[i] if i < len(pts) else "retorted"
+        row_q_defaults = thresholds_config["product_types"][row_pt]["quality_defaults"]
+        for feat, default_val in row_q_defaults.items():
+            if pd.isnull(working_df.loc[idx, feat]):
+                working_df.loc[idx, feat] = default_val
 
     # Stage 2: Predict Shelf Life
     # Dampen the color features (L_Value, a_Value, b_Value) to reduce their dominance by 85%
@@ -609,47 +616,35 @@ def predict_data(df: pd.DataFrame, product_type="retorted"):
     # User Calibration: Prediction [0, 90]
     predictions = np.clip(predictions, 0, 90)
 
-    # Apply soft penalties to the predictions before calibration bounds
-    multipliers = np.array([get_row_penalty_multiplier(working_df.iloc[i], product_type=product_type) for i in range(len(working_df))])
+    # Apply soft penalties to the predictions before calibration bounds per-row
+    multipliers = np.array([get_row_penalty_multiplier(working_df.iloc[i], product_type=pts[i]) for i in range(len(working_df))])
     predictions = predictions * multipliers
 
     # Apply calibration based on Quality Score to avoid over-reducing shelf life
-    # pH: fresh 6.6, spoiled 4.8
     ph_f = np.clip((working_df["pH"] - 4.8) / (6.6 - 4.8), 0.0, 1.0)
-    # PV: fresh 0.5, spoiled 8.0
     pv_f = np.clip((8.0 - working_df["PV"]) / (8.0 - 0.5), 0.0, 1.0)
-    # TPC: fresh 0.8, spoiled 10.0
     tpc_f = np.clip((10.0 - working_df["TPC"]) / (10.0 - 0.8), 0.0, 1.0)
-    # O2: fresh 18, spoiled 0
     o2_f = np.clip(working_df["O2"] / 18.0, 0.0, 1.0)
-    # CO2: fresh 1.0, spoiled 20.0
     co2_f = np.clip((20.0 - working_df["CO2"]) / (20.0 - 1.0), 0.0, 1.0)
-    # Moisture: fresh 70, spoiled 50
     moist_f = np.clip((working_df["Moisture_Content"] - 50.0) / (70.0 - 50.0), 0.0, 1.0)
 
     qs = (ph_f + pv_f + tpc_f + o2_f + co2_f + moist_f) / 6.0
-    
-    # Scale quality score bounds using the penalty multiplier
-    # so that bounds also contract downward if quality indicators are degraded
     qs_scaled = qs * multipliers
 
     days = working_df["Storage_Day"].values
     qs_val = qs_scaled.values if isinstance(qs_scaled, pd.Series) else qs_scaled
     
-    # Calculate bounds based on quality score to keep shelf life realistic
     lower_bound = (90.0 - days) * (qs_val ** 0.7)
     upper_bound = (90.0 - days) * (qs_val ** 0.4)
     
-    # If the food is heavily spoiled (QS < 0.3), disable lower bound
     lower_bound = np.where(qs_val >= 0.3, lower_bound, 0.0)
     
     lower_bound = np.maximum(0.0, lower_bound)
     upper_bound = np.maximum(0.0, upper_bound)
     
-    # Bounded clip of predictions
     predictions = np.clip(predictions, lower_bound, upper_bound)
     predictions = np.clip(predictions, 0.0, 90.0)
 
-    risk_levels = [get_row_risk_level(predictions[i], working_df.iloc[i], product_type=product_type) for i in range(len(predictions))]
+    risk_levels = [get_row_risk_level(predictions[i], working_df.iloc[i], product_type=pts[i]) for i in range(len(predictions))]
 
     return predictions, risk_levels, working_df[QUALITY_FEATURES]

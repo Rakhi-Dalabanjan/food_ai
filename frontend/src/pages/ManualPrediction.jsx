@@ -1,19 +1,19 @@
 import React, { useState, useEffect } from "react";
 import axios from "axios";
-const API = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 import {
   Activity,
   ShieldCheck,
   AlertTriangle,
   XOctagon,
   RotateCcw,
-  Search,
   FlaskConical,
   Zap,
   Play,
   Info,
   CheckCircle2,
 } from "lucide-react";
+
+const API = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 
 const ManualPrediction = () => {
   const [formData, setFormData] = useState({
@@ -413,6 +413,7 @@ const ManualPrediction = () => {
                 })}
               </div>
             </div>
+
             <div className="space-y-2">
               <label className="text-[12px] font-bold text-[rgba(220,230,245,0.85)] uppercase tracking-[0.5px]">Package Status</label>
               <select
@@ -485,14 +486,15 @@ const ManualPrediction = () => {
                     {/* Floating Tooltip */}
                     {hoveredField === field.name && (
                       <div className="absolute -top-12 left-0 z-50 bg-slate-800 text-white text-[10px] px-3 py-2 rounded-lg border border-white/10 shadow-xl pointer-events-none animate-in fade-in zoom-in-95 duration-200 flex items-center gap-2 whitespace-nowrap">
-                      <Info size={12} className="text-primary" />
-                      {field.tooltip}
-                      <div className="absolute -bottom-1 left-4 w-2 h-2 bg-slate-800 border-r border-b border-white/10 rotate-45" />
-                    </div>
-                  )}
+                        <Info size={12} className="text-primary" />
+                        {field.tooltip}
+                        <div className="absolute -bottom-1 left-4 w-2 h-2 bg-slate-800 border-r border-b border-white/10 rotate-45" />
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           <div className="flex flex-wrap items-center gap-3 mt-12 border-t border-white/10 pt-8">
@@ -669,6 +671,7 @@ const ManualPrediction = () => {
                       <p className="text-slate-300 text-[13px] italic leading-relaxed font-medium opacity-80">
                         {getRiskUI(result.risk_level).reason}
                       </p>
+                    </div>
                   </div>
                 </div>
 

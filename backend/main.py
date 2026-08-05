@@ -7,7 +7,8 @@ import numpy as np
 import shutil
 import os
 import json
-from typing import List, Dict, Optional
+import logging
+from typing import Dict, Optional
 
 from .database import engine, Base, get_db
 from .models import PredictionLog, ModelMetrics
@@ -18,9 +19,10 @@ from .ml_pipeline import (
     BASE_FEATURES,
     QUALITY_FEATURES,
     load_models,
-    get_risk_level,
     load_thresholds,
 )
+
+logger = logging.getLogger(__name__)
 
 def run_db_migrations(engine):
     """Safely and idempotently adds missing V2 columns to the prediction_logs table."""
@@ -79,9 +81,15 @@ run_db_migrations(engine)
 
 app = FastAPI(title="ShelfLife AI API")
 
+allowed_origins_env = os.getenv("ALLOWED_ORIGINS")
+if allowed_origins_env:
+    allow_origins = [origin.strip() for origin in allowed_origins_env.split(",") if origin.strip()]
+else:
+    allow_origins = ["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -99,7 +107,7 @@ async def global_exception_handler(request, exc):
             traceback.print_exc(file=f)
             f.write("\n" + "="*80 + "\n")
     except Exception as log_err:
-        print(f"Failed to log exception: {log_err}")
+        logger.error(f"Failed to log exception: {log_err}")
     
     return JSONResponse(
         status_code=500,
@@ -125,8 +133,74 @@ MAPPING_SUGGESTIONS = {
     "a_Value": ["a_value", "avalue", "a", "a*"],
     "b_Value": ["b_value", "bvalue", "b", "b*"],
     "Product_Type": ["product_type", "producttype", "type", "product_type_selection"],
+    "Sample_ID": ["sample_id", "sampleid", "sample_code", "samplecode", "sample", "sample_name", "samplename"],
     "Package_Status": ["package_status", "packagestatus", "pouch_condition", "pouchcondition", "package_condition", "packagecondition"],
 }
+
+import re
+
+def parse_sample_id_product_type(sample_id_str) -> Optional[str]:
+    """Inspects Sample ID string to detect Retorted vs Unretorted using robust regex patterns.
+    Priority 2 detection rules:
+    - ends with / contains 'NRT' -> Unretorted
+    - ends with / contains 'RT'  -> Retorted
+    """
+    if sample_id_str is None or pd.isnull(sample_id_str):
+        return None
+    s = str(sample_id_str).strip()
+    if not s:
+        return None
+
+    # Check for NRT / Unretorted patterns (ends with NRT or contains _NRT / -NRT / space NRT)
+    if re.search(r'(?:^|[\s_\-\d])NRT(?:$|[\s_\-\d])', s, re.IGNORECASE) or "unretort" in s.lower() or "non-retort" in s.lower():
+        return "Unretorted"
+
+    # Check for RT / Retorted patterns (ends with RT or contains _RT / -RT / space RT)
+    if re.search(r'(?:^|[\s_\-\d])RT(?:$|[\s_\-\d])', s, re.IGNORECASE) or "retort" in s.lower():
+        return "Retorted"
+
+    return None
+
+
+def resolve_row_product_type(row_idx, df: pd.DataFrame, col_mapping: dict, global_default: str) -> str:
+    """Implements 3-priority Product_Type detection logic:
+    Priority 1 (Highest): Mapped explicit 'Product_Type' column if present and valid.
+    Priority 2: Inspect 'Sample ID' column if Product_Type column is absent.
+    Priority 3 (Fallback): Global user-selected Product Type fallback.
+    """
+    pt_col = col_mapping.get("Product_Type")
+
+    # Priority 1: Check explicit Product_Type column if mapped and present
+    if pt_col and pt_col in df.columns:
+        val = df.loc[row_idx, pt_col]
+        if pd.notnull(val) and str(val).strip() != "":
+            parsed = parse_sample_id_product_type(str(val))
+            if parsed:
+                return parsed
+            try:
+                validated_pt, _ = validate_metadata(str(val).strip(), "Normal")
+                return validated_pt
+            except Exception:
+                pass
+
+    # Priority 2: Inspect Sample ID column if Product_Type column is absent
+    sample_id_col = col_mapping.get("Sample_ID") or col_mapping.get("Sample_Code")
+    if not sample_id_col:
+        for col in df.columns:
+            normalized_name = normalize_str(col)
+            if normalized_name in ["sampleid", "samplecode", "sample"]:
+                sample_id_col = col
+                break
+
+    if sample_id_col and sample_id_col in df.columns:
+        val = df.loc[row_idx, sample_id_col]
+        parsed = parse_sample_id_product_type(val)
+        if parsed:
+            return parsed
+
+    # Priority 3: Fallback to Global Product Type
+    validated_global, _ = validate_metadata(global_default, "Normal")
+    return validated_global
 
 
 def normalize_str(s: str) -> str:
@@ -145,7 +219,7 @@ def suggest_mapping(df: pd.DataFrame) -> Dict[str, str]:
             return None
 
     # 1. Exact / Direct Normalized Matches
-    for feature in FEATURES + ["Product_Type", "Package_Status"]:
+    for feature in FEATURES + ["Product_Type", "Package_Status", "Sample_ID"]:
         norm_feature = normalize_str(feature)
         match = next(
             (col for col, norm in normalized_cols.items() if norm == norm_feature),
@@ -186,7 +260,7 @@ def suggest_mapping(df: pd.DataFrame) -> Dict[str, str]:
                         break
 
     # 3. Alias Check for remaining features
-    for feature in FEATURES + ["Product_Type", "Package_Status"]:
+    for feature in FEATURES + ["Product_Type", "Package_Status", "Sample_ID"]:
         if feature in mapping:
             continue
         suggestions = MAPPING_SUGGESTIONS.get(feature, [])
@@ -227,6 +301,44 @@ class ManualPredictionRequest(BaseModel):
     b_Value: Optional[float] = None
     Product_Type: Optional[str] = "Retorted"
     Package_Status: Optional[str] = "Normal"
+
+
+def validate_metadata(product_type: str, package_status: str):
+    """Validates the Product_Type and Package_Status against active configuration thresholds."""
+    thresholds = load_thresholds()
+    if not thresholds:
+        valid_pt = ["retorted", "unretorted"]
+        valid_ps = ["Normal", "Seal_Failure", "Leakage", "Damaged_Package", "Bulged"]
+    else:
+        valid_pt = list(thresholds.get("product_types", {}).keys())
+        valid_ps = thresholds.get("package_statuses", [])
+
+    pt_str = str(product_type).strip()
+    pt_lower = pt_str.lower()
+
+    # Pattern matching for codes like 'A4 NRT' -> 'unretorted', 'A1 RT' -> 'retorted'
+    if "nrt" in pt_lower or "unretort" in pt_lower or "non-retort" in pt_lower:
+        pt_lower = "unretorted"
+    elif "rt" in pt_lower or "retort" in pt_lower:
+        pt_lower = "retorted"
+
+    if pt_lower not in [p.lower() for p in valid_pt]:
+        supported_str = ", ".join(p.capitalize() for p in valid_pt)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid Product_Type '{product_type}'. Supported: {supported_str}"
+        )
+
+    matched_pt = next(p.capitalize() for p in valid_pt if p.lower() == pt_lower)
+
+    if package_status not in valid_ps:
+        supported_str = ", ".join(valid_ps)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid Package_Status '{package_status}'. Supported: {supported_str}"
+        )
+
+    return matched_pt, package_status
 
 
 def calculate_oxidation_rate(pv, storage_day):
@@ -299,6 +411,9 @@ async def predict_endpoint(
             detail="Invalid file format.\n\nSupported:\nCSV (.csv)\nExcel (.xlsx)",
         )
 
+    # Validate global defaults
+    product_type, package_status = validate_metadata(product_type, package_status)
+
     file_path = os.path.join(UPLOAD_DIR, "predict_" + file.filename)
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
@@ -331,14 +446,29 @@ async def predict_endpoint(
                 detail="Please provide at least 2 parameters in your file.",
             )
 
-        predictions, risk_levels, quality_df = predict_data(mapped_df, product_type=product_type)
-
-        # Retrieve row-level mappings if mapped, otherwise use default
+        # Retrieve row-level mappings if mapped, otherwise fallback to endpoint default
         product_type_col = col_mapping.get("Product_Type")
         package_status_col = col_mapping.get("Package_Status")
 
         row_product_types = []
         row_package_statuses = []
+
+        for idx in df.index:
+            # Priority 1 (Product_Type col) -> Priority 2 (Sample_ID col) -> Priority 3 (Global default)
+            row_pt = resolve_row_product_type(idx, df, col_mapping, product_type)
+            row_product_types.append(row_pt)
+
+            # Get row-specific package status or fallback to endpoint default
+            row_ps = package_status
+            if package_status_col and package_status_col in df.columns:
+                val = df.loc[idx, package_status_col]
+                if pd.notnull(val) and str(val).strip() != "":
+                    row_ps = str(val).strip()
+            _, row_ps = validate_metadata("Retorted", row_ps)
+            row_package_statuses.append(row_ps)
+
+        predictions, risk_levels, quality_df = predict_data(mapped_df, product_type=row_product_types)
+
         row_oxidation_rates = []
 
         # Update original df with predictions and also estimated quality values
@@ -350,21 +480,8 @@ async def predict_endpoint(
 
         # Log to DB and collect row-level V2 values
         for idx, row in mapped_df.iterrows():
-            # Get row-specific product type or fallback to endpoint default
-            row_pt = product_type
-            if product_type_col and product_type_col in df.columns:
-                val = df.loc[idx, product_type_col]
-                if pd.notnull(val) and str(val).strip() != "":
-                    row_pt = str(val).strip()
-            row_product_types.append(row_pt)
-
-            # Get row-specific package status or fallback to endpoint default
-            row_ps = package_status
-            if package_status_col and package_status_col in df.columns:
-                val = df.loc[idx, package_status_col]
-                if pd.notnull(val) and str(val).strip() != "":
-                    row_ps = str(val).strip()
-            row_package_statuses.append(row_ps)
+            row_pt = row_product_types[idx]
+            row_ps = row_package_statuses[idx]
 
             # Compute oxidation rate safely using final PV (user supplied or estimated) and Storage_Day
             final_pv = row.get("PV")
@@ -430,11 +547,6 @@ async def predict_endpoint(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/manual-predict")
@@ -444,6 +556,9 @@ def manual_predict(data: ManualPredictionRequest, db: Session = Depends(get_db))
         input_dict = {k: v for k, v in data.dict().items() if v is not None}
         product_type = input_dict.pop("Product_Type", "Retorted")
         package_status = input_dict.pop("Package_Status", "Normal")
+
+        # Validate metadata
+        product_type, package_status = validate_metadata(product_type, package_status)
 
         # New Rule: Minimum 1 parameter
         if len(input_dict) < 1:
@@ -500,7 +615,7 @@ def manual_predict(data: ManualPredictionRequest, db: Session = Depends(get_db))
         raise
     except Exception as e:
         db.rollback()
-        print(f"Technical error during prediction: {str(e)}")
+        logger.error(f"Technical error during prediction: {str(e)}")
         raise HTTPException(
             status_code=500, detail="Unable to process prediction. Please try again."
         )
@@ -511,7 +626,10 @@ def estimate_quality(data: ManualPredictionRequest):
     try:
         input_dict = {k: v for k, v in data.dict().items() if v is not None}
         product_type = input_dict.pop("Product_Type", "Retorted")
-        input_dict.pop("Package_Status", None)
+        package_status = input_dict.pop("Package_Status", "Normal")
+
+        # Validate metadata
+        product_type, package_status = validate_metadata(product_type, package_status)
 
         if len(input_dict) < 1:
             raise HTTPException(
@@ -606,7 +724,7 @@ def estimate_quality(data: ManualPredictionRequest):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Technical error during estimation: {str(e)}")
+        logger.error(f"Technical error during estimation: {str(e)}")
         raise HTTPException(
             status_code=500, detail="Unable to generate values. Please try again."
         )
@@ -629,8 +747,6 @@ def get_metrics(db: Session = Depends(get_db)):
     metrics = db.query(ModelMetrics).order_by(ModelMetrics.id.desc()).first()
     if not metrics:
         return {"mae": None, "rmse": None, "r2_score": None, "feature_importances": {}}
-
-    import json
 
     return {
         "timestamp": metrics.timestamp,

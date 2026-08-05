@@ -68,7 +68,7 @@ const ModelMetrics = () => {
 
   const distributionData = logs.map((log, idx) => ({
     id: idx,
-    predicted: log.predicted_shelf_life,
+    predicted: log.shelf_life_remaining ?? log.predicted_shelf_life,
   }));
 
   return (

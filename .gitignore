@@ -23,6 +23,7 @@ frontend/dist/
 
 # Reports
 reports/
+scratch/
 
 # Env
 .env
