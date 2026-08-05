@@ -123,6 +123,8 @@ MAPPING_SUGGESTIONS = {
     "L_Value": ["l_value", "lvalue", "l", "l*"],
     "a_Value": ["a_value", "avalue", "a", "a*"],
     "b_Value": ["b_value", "bvalue", "b", "b*"],
+    "Product_Type": ["product_type", "producttype", "type", "product_type_selection"],
+    "Package_Status": ["package_status", "packagestatus", "pouch_condition", "pouchcondition", "package_condition", "packagecondition"],
 }
 
 
@@ -142,7 +144,7 @@ def suggest_mapping(df: pd.DataFrame) -> Dict[str, str]:
             return None
 
     # 1. Exact / Direct Normalized Matches
-    for feature in FEATURES:
+    for feature in FEATURES + ["Product_Type", "Package_Status"]:
         norm_feature = normalize_str(feature)
         match = next(
             (col for col, norm in normalized_cols.items() if norm == norm_feature),
@@ -183,7 +185,7 @@ def suggest_mapping(df: pd.DataFrame) -> Dict[str, str]:
                         break
 
     # 3. Alias Check for remaining features
-    for feature in FEATURES:
+    for feature in FEATURES + ["Product_Type", "Package_Status"]:
         if feature in mapping:
             continue
         suggestions = MAPPING_SUGGESTIONS.get(feature, [])
@@ -222,6 +224,22 @@ class ManualPredictionRequest(BaseModel):
     L_Value: Optional[float] = None
     a_Value: Optional[float] = None
     b_Value: Optional[float] = None
+    Product_Type: Optional[str] = "Retorted"
+    Package_Status: Optional[str] = "Normal"
+
+
+def calculate_oxidation_rate(pv, storage_day):
+    """Safely computes Oxidation_Rate = PV / Storage_Day without division by zero or errors."""
+    if pv is None or storage_day is None:
+        return None
+    try:
+        pv_val = float(pv)
+        day_val = float(storage_day)
+        if np.isnan(pv_val) or np.isnan(day_val) or day_val <= 0:
+            return None
+        return pv_val / day_val
+    except Exception:
+        return None
 
 
 @app.get("/health")
@@ -269,6 +287,8 @@ async def upload_file(file: UploadFile = File(...)):
 async def predict_endpoint(
     file: UploadFile = File(...),
     mapping: str = Form(...),
+    product_type: Optional[str] = Form("Retorted"),
+    package_status: Optional[str] = Form("Normal"),
     db: Session = Depends(get_db),
 ):
     filename = file.filename.lower()
@@ -304,14 +324,27 @@ async def predict_endpoint(
                 mapped_df[feature] = np.nan
 
         # Validation rule: at least 2 parameters in the file
-        # We check per row later or just globally if the mapping has at least 2 fields
         if provided_fields_count < 2:
             raise HTTPException(
                 status_code=400,
                 detail="Please provide at least 2 parameters in your file.",
             )
 
-        predictions, risk_levels, quality_df = predict_data(mapped_df)
+        # Check if predict_data supports product_type parameter using introspection
+        import inspect
+        sig = inspect.signature(predict_data)
+        if "product_type" in sig.parameters:
+            predictions, risk_levels, quality_df = predict_data(mapped_df, product_type=product_type)
+        else:
+            predictions, risk_levels, quality_df = predict_data(mapped_df)
+
+        # Retrieve row-level mappings if mapped, otherwise use default
+        product_type_col = col_mapping.get("Product_Type")
+        package_status_col = col_mapping.get("Package_Status")
+
+        row_product_types = []
+        row_package_statuses = []
+        row_oxidation_rates = []
 
         # Update original df with predictions and also estimated quality values
         df["Shelf_Life"] = predictions
@@ -320,42 +353,81 @@ async def predict_endpoint(
         for feature in QUALITY_FEATURES:
             df[f"Estimated_{feature}"] = quality_df[feature].values
 
-        # Log to DB (using quality_df results)
-        for idx, row in mapped_df.head(100).iterrows():
-            log = PredictionLog(
-                retort_temperature=float(
-                    row.get("Retort_Temperature")
-                    if pd.notnull(row.get("Retort_Temperature"))
-                    else 0
-                ),
-                holding_time=float(
-                    row.get("Holding_Time")
-                    if pd.notnull(row.get("Holding_Time"))
-                    else 0
-                ),
-                f0=float(row.get("F0") if pd.notnull(row.get("F0")) else 0),
-                storage_temperature=float(
-                    row.get("Storage_Temperature")
-                    if pd.notnull(row.get("Storage_Temperature"))
-                    else 0
-                ),
-                storage_day=float(
-                    row.get("Storage_Day") if pd.notnull(row.get("Storage_Day")) else 0
-                ),
-                ph=float(quality_df.loc[idx, "pH"]),
-                pv=float(quality_df.loc[idx, "PV"]),
-                tpc=float(quality_df.loc[idx, "TPC"]),
-                o2=float(quality_df.loc[idx, "O2"]),
-                co2=float(quality_df.loc[idx, "CO2"]),
-                moisture_content=float(quality_df.loc[idx, "Moisture_Content"]),
-                l_value=float(quality_df.loc[idx, "L_Value"]),
-                a_value=float(quality_df.loc[idx, "a_Value"]),
-                b_value=float(quality_df.loc[idx, "b_Value"]),
-                shelf_life_remaining=float(df.loc[idx, "Shelf_Life"]),
-                risk_level=str(df.loc[idx, "Risk_Level"]),
-            )
-            db.add(log)
+        # Log to DB and collect row-level V2 values
+        for idx, row in mapped_df.iterrows():
+            # Get row-specific product type or fallback to endpoint default
+            row_pt = product_type
+            if product_type_col and product_type_col in df.columns:
+                val = df.loc[idx, product_type_col]
+                if pd.notnull(val) and str(val).strip() != "":
+                    row_pt = str(val).strip()
+            row_product_types.append(row_pt)
+
+            # Get row-specific package status or fallback to endpoint default
+            row_ps = package_status
+            if package_status_col and package_status_col in df.columns:
+                val = df.loc[idx, package_status_col]
+                if pd.notnull(val) and str(val).strip() != "":
+                    row_ps = str(val).strip()
+            row_package_statuses.append(row_ps)
+
+            # Compute oxidation rate safely using final PV (user supplied or estimated) and Storage_Day
+            final_pv = row.get("PV")
+            if pd.isnull(final_pv):
+                final_pv = quality_df.loc[idx, "PV"]
+            
+            final_day = row.get("Storage_Day")
+            if pd.isnull(final_day):
+                final_day = 0.0
+
+            ox_rate = calculate_oxidation_rate(final_pv, final_day)
+            row_oxidation_rates.append(ox_rate)
+
+            # Save the first 100 rows to the database log
+            if idx < 100:
+                log = PredictionLog(
+                    retort_temperature=float(
+                        row.get("Retort_Temperature")
+                        if pd.notnull(row.get("Retort_Temperature"))
+                        else 0
+                    ),
+                    holding_time=float(
+                        row.get("Holding_Time")
+                        if pd.notnull(row.get("Holding_Time"))
+                        else 0
+                    ),
+                    f0=float(row.get("F0") if pd.notnull(row.get("F0")) else 0),
+                    storage_temperature=float(
+                        row.get("Storage_Temperature")
+                        if pd.notnull(row.get("Storage_Temperature"))
+                        else 0
+                    ),
+                    storage_day=float(
+                        row.get("Storage_Day") if pd.notnull(row.get("Storage_Day")) else 0
+                    ),
+                    ph=float(quality_df.loc[idx, "pH"]),
+                    pv=float(quality_df.loc[idx, "PV"]),
+                    tpc=float(quality_df.loc[idx, "TPC"]),
+                    o2=float(quality_df.loc[idx, "O2"]),
+                    co2=float(quality_df.loc[idx, "CO2"]),
+                    moisture_content=float(quality_df.loc[idx, "Moisture_Content"]),
+                    l_value=float(quality_df.loc[idx, "L_Value"]),
+                    a_value=float(quality_df.loc[idx, "a_Value"]),
+                    b_value=float(quality_df.loc[idx, "b_Value"]),
+                    shelf_life_remaining=float(df.loc[idx, "Shelf_Life"]),
+                    risk_level=str(df.loc[idx, "Risk_Level"]),
+                    product_type=row_pt,
+                    package_status=row_ps,
+                    oxidation_rate=ox_rate,
+                )
+                db.add(log)
+
         db.commit()
+
+        # Add V2 output attributes to output response DataFrame for UI display
+        df["Product_Type"] = row_product_types
+        df["Package_Status"] = row_package_statuses
+        df["Oxidation_Rate"] = row_oxidation_rates
 
         return clean_nans(df.to_dict(orient="records"))
     except HTTPException:
@@ -375,6 +447,8 @@ def manual_predict(data: ManualPredictionRequest, db: Session = Depends(get_db))
     try:
         # Filter out None values to let predict_data handle estimation
         input_dict = {k: v for k, v in data.dict().items() if v is not None}
+        product_type = input_dict.pop("Product_Type", "Retorted")
+        package_status = input_dict.pop("Package_Status", "Normal")
 
         # New Rule: Minimum 1 parameter
         if len(input_dict) < 1:
@@ -384,11 +458,25 @@ def manual_predict(data: ManualPredictionRequest, db: Session = Depends(get_db))
 
         df = pd.DataFrame([input_dict])
 
-        predictions, risk_levels, quality_df = predict_data(df)
+        # Check if predict_data supports product_type parameter using introspection
+        import inspect
+        sig = inspect.signature(predict_data)
+        if "product_type" in sig.parameters:
+            predictions, risk_levels, quality_df = predict_data(df, product_type=product_type)
+        else:
+            predictions, risk_levels, quality_df = predict_data(df)
 
         shelf_life = float(predictions[0])
         risk_level = risk_levels[0]
         estimated_quality = quality_df.iloc[0].to_dict()
+
+        # Compute oxidation rate safely using final PV and Storage_Day
+        pv_val = estimated_quality.get("PV")
+        day_val = data.Storage_Day
+        if day_val is None:
+            day_val = 0.0
+
+        ox_rate = calculate_oxidation_rate(pv_val, day_val)
 
         log = PredictionLog(
             retort_temperature=data.Retort_Temperature,
@@ -407,6 +495,9 @@ def manual_predict(data: ManualPredictionRequest, db: Session = Depends(get_db))
             b_value=estimated_quality["b_Value"],
             shelf_life_remaining=shelf_life,
             risk_level=risk_level,
+            product_type=product_type,
+            package_status=package_status,
+            oxidation_rate=ox_rate,
         )
         db.add(log)
         db.commit()
@@ -430,6 +521,8 @@ def manual_predict(data: ManualPredictionRequest, db: Session = Depends(get_db))
 def estimate_quality(data: ManualPredictionRequest):
     try:
         input_dict = {k: v for k, v in data.dict().items() if v is not None}
+        product_type = input_dict.pop("Product_Type", "Retorted")
+        package_status = input_dict.pop("Package_Status", "Normal")
 
         if len(input_dict) < 1:
             raise HTTPException(
@@ -449,7 +542,14 @@ def estimate_quality(data: ManualPredictionRequest):
                 input_dict[k] = v
 
         df = pd.DataFrame([input_dict])
-        _, _, quality_df = predict_data(df)
+
+        # Check if predict_data supports product_type parameter using introspection
+        import inspect
+        sig = inspect.signature(predict_data)
+        if "product_type" in sig.parameters:
+            _, _, quality_df = predict_data(df, product_type=product_type)
+        else:
+            _, _, quality_df = predict_data(df)
 
         # Merge the original inputs with the predicted ones for a full form set
         full_data = quality_df.iloc[0].to_dict()
