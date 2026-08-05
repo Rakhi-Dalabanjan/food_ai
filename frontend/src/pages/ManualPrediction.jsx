@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import axios from "axios";
 const API = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 import {
@@ -40,6 +40,42 @@ const ManualPrediction = () => {
   const [isGenerated, setIsGenerated] = useState(false);
   const [generatedFields, setGeneratedFields] = useState([]);
   const [hoveredField, setHoveredField] = useState(null);
+  const [productType, setProductType] = useState("retorted");
+  const [packageStatus, setPackageStatus] = useState("Normal");
+  const [thresholds, setThresholds] = useState(null);
+
+  useEffect(() => {
+    axios
+      .get(`${API}/thresholds`)
+      .then((res) => {
+        setThresholds(res.data);
+      })
+      .catch((err) => {
+        console.error("Failed to load thresholds config, using static defaults.", err);
+      });
+  }, []);
+
+  const productTypesList = thresholds?.product_types
+    ? Object.keys(thresholds.product_types).map((key) => ({
+        key,
+        display_name: thresholds.product_types[key].display_name,
+      }))
+    : [
+        { key: "retorted", display_name: "Retorted Products" },
+        { key: "unretorted", display_name: "Unretorted Products" },
+      ];
+
+  const packageStatusList = thresholds?.package_statuses || [
+    "Normal",
+    "Seal_Failure",
+    "Leakage",
+    "Damaged_Package",
+    "Bulged",
+  ];
+
+  const isFieldDisabled = (fieldName) => {
+    return productType === "unretorted" && ["Retort_Temperature", "Holding_Time", "F0"].includes(fieldName);
+  };
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -69,6 +105,8 @@ const ManualPrediction = () => {
     setError(null);
     setIsGenerated(false);
     setGeneratedFields([]);
+    setProductType("retorted");
+    setPackageStatus("Normal");
   };
 
   const loadSample = () => {
@@ -88,6 +126,8 @@ const ManualPrediction = () => {
       a_Value: "5",
       b_Value: "15",
     });
+    setProductType("retorted");
+    setPackageStatus("Normal");
     setGeneratedFields([]);
     setIsGenerated(true);
     setResult(null);
@@ -98,7 +138,7 @@ const ManualPrediction = () => {
     setError(null);
 
     const filledCount = Object.keys(formData).filter(
-      (key) => formData[key] !== "",
+      (key) => formData[key] !== "" && !isFieldDisabled(key),
     ).length;
     if (filledCount < 1) {
       setError(
@@ -108,9 +148,12 @@ const ManualPrediction = () => {
       return;
     }
 
-    const payload = {};
+    const payload = {
+      Product_Type: productType,
+      Package_Status: packageStatus,
+    };
     Object.keys(formData).forEach((key) => {
-      if (formData[key] !== "") {
+      if (formData[key] !== "" && !isFieldDisabled(key)) {
         payload[key] = parseFloat(formData[key]);
       }
     });
@@ -123,6 +166,9 @@ const ManualPrediction = () => {
       const updatedData = { ...formData };
       const newlyGenerated = [];
       Object.keys(res.data).forEach((key) => {
+        // Only fill if not disabled
+        if (isFieldDisabled(key)) return;
+
         if (!formData[key] || formData[key] === "") {
           newlyGenerated.push(key);
         }
@@ -145,7 +191,7 @@ const ManualPrediction = () => {
     setError(null);
 
     const filledCount = Object.keys(formData).filter(
-      (key) => formData[key] !== "",
+      (key) => formData[key] !== "" && !isFieldDisabled(key),
     ).length;
     if (filledCount < 1) {
       setError(
@@ -155,9 +201,12 @@ const ManualPrediction = () => {
       return;
     }
 
-    const payload = {};
+    const payload = {
+      Product_Type: productType,
+      Package_Status: packageStatus,
+    };
     Object.keys(formData).forEach((key) => {
-      if (formData[key] !== "") {
+      if (formData[key] !== "" && !isFieldDisabled(key)) {
         payload[key] = parseFloat(formData[key]);
       }
     });
@@ -336,49 +385,106 @@ const ManualPrediction = () => {
 
       <div className="grid grid-cols-1 xl:grid-cols-10 gap-6 items-start">
         <div className="xl:col-span-7 bg-surface/40 backdrop-blur-sm p-8 rounded-[1.5rem] border border-white/10 shadow-xl relative">
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-y-8 gap-x-6">
-            {fields.map((field) => (
-              <div
-                key={field.name}
-                className="space-y-2.5 relative group"
-                onMouseEnter={() => setHoveredField(field.name)}
-                onMouseLeave={() => setHoveredField(null)}
+          
+          {/* Product Type Toggle & Package Status Dropdown */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8 bg-white/[0.02] p-5 rounded-2xl border border-white/5">
+            <div className="space-y-2">
+              <label className="text-[12px] font-bold text-[rgba(220,230,245,0.85)] uppercase tracking-[0.5px]">Product Type</label>
+              <div className="flex gap-2">
+                {productTypesList.map((typeObj) => {
+                  const active = productType === typeObj.key;
+                  return (
+                    <button
+                      key={typeObj.key}
+                      type="button"
+                      onClick={() => {
+                        setProductType(typeObj.key);
+                        setResult(null);
+                      }}
+                      className={`flex-1 h-[40px] rounded-xl font-bold text-xs uppercase tracking-wider border transition-all ${
+                        active
+                          ? "bg-primary text-white border-primary shadow-md shadow-primary/20"
+                          : "bg-slate-900/40 text-slate-400 border-white/10 hover:bg-slate-900/60"
+                      }`}
+                    >
+                      {typeObj.display_name}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="space-y-2">
+              <label className="text-[12px] font-bold text-[rgba(220,230,245,0.85)] uppercase tracking-[0.5px]">Package Status</label>
+              <select
+                value={packageStatus}
+                onChange={(e) => {
+                  setPackageStatus(e.target.value);
+                  setResult(null);
+                }}
+                className="w-full bg-slate-950/40 border border-white/10 rounded-[12px] px-3 text-[#F3F7FF] transition-all duration-150 h-[40px] text-xs font-bold focus:border-primary focus:ring-4 focus:ring-primary/10"
               >
-                <div className="flex items-center justify-between px-1">
-                  <label className="text-[12px] font-medium text-[rgba(220,230,245,0.85)] uppercase tracking-[0.3px] flex items-center gap-1.5 block">
-                    <span>{field.label.split("(")[0]}</span>
-                    <span className="text-[11px] lowercase opacity-60 italic font-normal">
-                      {field.label.includes("(")
-                        ? `(${field.label.split("(")[1]}`
-                        : ""}
-                    </span>
-                  </label>
-                  {generatedFields.includes(field.name) && (
-                    <div className="flex items-center gap-1 text-[9px] font-bold uppercase text-white bg-blue-600 px-2 py-1 rounded-full border border-blue-400/30 animate-in zoom-in-95 shadow-sm whitespace-nowrap leading-none">
-                      <Zap size={10} fill="white" className="shrink-0" />
-                      Expected
-                    </div>
-                  )}
-                </div>
+                {packageStatusList.map((status) => (
+                  <option key={status} value={status} className="bg-slate-900 text-slate-200">
+                    {status.replace("_", " ")}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
 
-                <div className="relative">
-                  <input
-                    type="number"
-                    step="any"
-                    name={field.name}
-                    value={formData[field.name]}
-                    onChange={handleChange}
-                    className={`w-full bg-slate-950/40 border rounded-[12px] px-3 text-[#F3F7FF] transition-all duration-150 h-[48px] text-[15px] font-semibold shadow-inner ${
-                      generatedFields.includes(field.name)
-                        ? "border-blue-500/50 bg-blue-500/[0.05] focus:border-blue-400 focus:ring-4 focus:ring-blue-500/10 text-blue-50"
-                        : "border-white/10 focus:border-primary focus:ring-4 focus:ring-primary/10"
-                    }`}
-                    placeholder=""
-                  />
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-y-8 gap-x-6">
+            {fields.map((field) => {
+              const disabled = isFieldDisabled(field.name);
+              return (
+                <div
+                  key={field.name}
+                  className="space-y-2.5 relative group"
+                  onMouseEnter={() => setHoveredField(field.name)}
+                  onMouseLeave={() => setHoveredField(null)}
+                >
+                  <div className="flex items-center justify-between px-1">
+                    <label className="text-[12px] font-medium text-[rgba(220,230,245,0.85)] uppercase tracking-[0.3px] flex items-center gap-1.5 block">
+                      <span>{field.label.split("(")[0]}</span>
+                      <span className="text-[11px] lowercase opacity-60 italic font-normal">
+                        {field.label.includes("(")
+                          ? `(${field.label.split("(")[1]}`
+                          : ""}
+                      </span>
+                    </label>
+                    {generatedFields.includes(field.name) && !disabled && (
+                      <div className="flex items-center gap-1 text-[9px] font-bold uppercase text-white bg-blue-600 px-2 py-1 rounded-full border border-blue-400/30 animate-in zoom-in-95 shadow-sm whitespace-nowrap leading-none">
+                        <Zap size={10} fill="white" className="shrink-0" />
+                        Expected
+                      </div>
+                    )}
+                  </div>
 
-                  {/* Floating Tooltip */}
-                  {hoveredField === field.name && (
-                    <div className="absolute -top-12 left-0 z-50 bg-slate-800 text-white text-[10px] px-3 py-2 rounded-lg border border-white/10 shadow-xl pointer-events-none animate-in fade-in zoom-in-95 duration-200 flex items-center gap-2 whitespace-nowrap">
+                  <div className="relative">
+                    <input
+                      type="number"
+                      step="any"
+                      name={field.name}
+                      value={formData[field.name]}
+                      disabled={disabled}
+                      onChange={handleChange}
+                      className={`w-full bg-slate-950/40 border rounded-[12px] px-3 text-[#F3F7FF] transition-all duration-150 h-[48px] text-[15px] font-semibold shadow-inner ${
+                        disabled
+                          ? "opacity-50 cursor-not-allowed bg-slate-900/60 border-dashed border-white/5 text-slate-500"
+                          : generatedFields.includes(field.name)
+                            ? "border-blue-500/50 bg-blue-500/[0.05] focus:border-blue-400 focus:ring-4 focus:ring-blue-500/10 text-blue-50"
+                            : "border-white/10 focus:border-primary focus:ring-4 focus:ring-primary/10"
+                      }`}
+                      placeholder={disabled ? "N/A" : ""}
+                    />
+                    {disabled && (
+                      <p className="text-[10px] text-amber-400/80 font-medium mt-1">
+                        Not applicable for Unretorted products.
+                      </p>
+                    )}
+
+                    {/* Floating Tooltip */}
+                    {hoveredField === field.name && (
+                      <div className="absolute -top-12 left-0 z-50 bg-slate-800 text-white text-[10px] px-3 py-2 rounded-lg border border-white/10 shadow-xl pointer-events-none animate-in fade-in zoom-in-95 duration-200 flex items-center gap-2 whitespace-nowrap">
                       <Info size={12} className="text-primary" />
                       {field.tooltip}
                       <div className="absolute -bottom-1 left-4 w-2 h-2 bg-slate-800 border-r border-b border-white/10 rotate-45" />
@@ -563,7 +669,6 @@ const ManualPrediction = () => {
                       <p className="text-slate-300 text-[13px] italic leading-relaxed font-medium opacity-80">
                         {getRiskUI(result.risk_level).reason}
                       </p>
-                    </div>
                   </div>
                 </div>
 
