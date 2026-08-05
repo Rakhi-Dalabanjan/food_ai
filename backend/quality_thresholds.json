@@ -1,10 +1,17 @@
 {
-  "version": "2.0",
-  "note": "Threshold values are configurable. Retorted values match V1 hardcoded behavior exactly. Unretorted values are PROVISIONAL — Pending Client Confirmation. Edit this file to update thresholds without code changes.",
+  "metadata": {
+    "schema_version": "2.0.0",
+    "created_for": "ShelfLife AI",
+    "last_updated": "2026-08-05",
+    "retorted_status": "Confirmed — matches V1 hardcoded values",
+    "unretorted_status": "Pending Client Confirmation — provisional values only"
+  },
   "product_types": {
     "retorted": {
       "display_name": "Retorted Products",
       "description": "Thermally sterilized products (F0 > 0)",
+      "is_confirmed": true,
+      "requires_client_approval": false,
       "f0_applicable": true,
       "thresholds": {
         "pH": {
@@ -94,11 +101,11 @@
     "unretorted": {
       "display_name": "Unretorted Products",
       "description": "Non-thermally processed products.",
+      "is_confirmed": false,
+      "requires_client_approval": true,
       "f0_applicable": false,
-      "_status": "PENDING CLIENT CONFIRMATION — All threshold values below are provisional. Update when client provides confirmed scientific limits.",
       "thresholds": {
         "pH": {
-          "_status": "Pending Client Confirmation",
           "normal": { "min": 5.5, "max": 7.0 },
           "warning": { "min": 4.5, "max": 7.5 },
           "moderate": { "min": 4.0, "max": 8.0 },
@@ -109,7 +116,6 @@
           "degradation_max_level": 3
         },
         "PV": {
-          "_status": "Pending Client Confirmation",
           "normal_max": 2.0,
           "warning_max": 5.0,
           "moderate_max": 8.0,
@@ -120,7 +126,6 @@
           "degradation_max_level": 3
         },
         "TPC": {
-          "_status": "Pending Client Confirmation",
           "normal_max": 100.0,
           "warning_max": 1000.0,
           "moderate_max": 10000.0,
@@ -132,7 +137,6 @@
           "any_growth_is_critical": false
         },
         "O2": {
-          "_status": "Pending Client Confirmation",
           "normal_min": 12.0,
           "warning_min": 6.0,
           "moderate_min": 3.0,
@@ -143,7 +147,6 @@
           "degradation_max_level": 3
         },
         "CO2": {
-          "_status": "Pending Client Confirmation",
           "normal_max": 10.0,
           "warning_max": 15.0,
           "moderate_max": 20.0,
@@ -154,7 +157,6 @@
           "degradation_max_level": 3
         },
         "Moisture_Content": {
-          "_status": "Pending Client Confirmation",
           "normal": { "min": 55.0, "max": 80.0 },
           "warning_min": 40.0,
           "penalty_normal": 1.0,
