@@ -24,6 +24,9 @@ class PredictionLog(Base):
     b_value = Column(Float)
     shelf_life_remaining = Column(Float)
     risk_level = Column(String)
+    product_type = Column(String, nullable=True)
+    package_status = Column(String, nullable=True)
+    oxidation_rate = Column(Float, nullable=True)
 
 
 class ModelMetrics(Base):

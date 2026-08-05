@@ -21,7 +21,60 @@ from .ml_pipeline import (
     get_risk_level,
 )
 
+def run_db_migrations(engine):
+    """Safely and idempotently adds missing V2 columns to the prediction_logs table."""
+    import sqlite3
+    import logging
+
+    logger = logging.getLogger("DBMigration")
+    logger.setLevel(logging.INFO)
+    if not logger.handlers:
+        ch = logging.StreamHandler()
+        ch.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        logger.addHandler(ch)
+
+    try:
+        db_url = str(engine.url)
+        if db_url.startswith("sqlite:///"):
+            db_path = db_url.replace("sqlite:///", "")
+        else:
+            db_path = engine.url.database
+
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+
+        # Check existing columns using SQLite PRAGMA
+        cursor.execute("PRAGMA table_info(prediction_logs)")
+        columns_info = cursor.fetchall()
+        existing_columns = {row[1] for row in columns_info}
+
+        columns_to_add = [
+            ("product_type", "TEXT"),
+            ("package_status", "TEXT"),
+            ("oxidation_rate", "REAL")
+        ]
+
+        migrated_cols = []
+        for col_name, col_type in columns_to_add:
+            if col_name not in existing_columns:
+                cursor.execute(f"ALTER TABLE prediction_logs ADD COLUMN {col_name} {col_type}")
+                migrated_cols.append(col_name)
+                logger.info(f"Database Migration: Column '{col_name}' ADDED to prediction_logs table.")
+
+        conn.commit()
+        conn.close()
+
+        if migrated_cols:
+            logger.info(f"Database Migration completed successfully for columns: {', '.join(migrated_cols)}")
+        else:
+            logger.info("Database Migration: skipped. All columns already exist.")
+
+    except Exception as e:
+        logger.error(f"Database Migration failed: {str(e)}")
+
+
 Base.metadata.create_all(bind=engine)
+run_db_migrations(engine)
 
 app = FastAPI(title="ShelfLife AI API")
 
