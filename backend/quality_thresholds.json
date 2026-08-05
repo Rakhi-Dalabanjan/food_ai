@@ -1,0 +1,195 @@
+{
+  "version": "2.0",
+  "note": "Threshold values are configurable. Retorted values match V1 hardcoded behavior exactly. Unretorted values are PROVISIONAL — Pending Client Confirmation. Edit this file to update thresholds without code changes.",
+  "product_types": {
+    "retorted": {
+      "display_name": "Retorted Products",
+      "description": "Thermally sterilized products (F0 > 0)",
+      "f0_applicable": true,
+      "thresholds": {
+        "pH": {
+          "normal": { "min": 6.2, "max": 6.8 },
+          "warning": { "min": 5.5, "max": 7.2 },
+          "moderate": { "min": 4.8, "max": 7.8 },
+          "penalty_normal": 1.0,
+          "penalty_warning": 0.96,
+          "penalty_moderate": 0.88,
+          "penalty_severe": 0.70,
+          "degradation_max_level": 3
+        },
+        "PV": {
+          "normal_max": 1.2,
+          "warning_max": 3.0,
+          "moderate_max": 5.5,
+          "penalty_normal": 1.0,
+          "penalty_warning": 0.96,
+          "penalty_moderate": 0.88,
+          "penalty_severe": 0.70,
+          "degradation_max_level": 3
+        },
+        "TPC": {
+          "normal_max": 1.8,
+          "warning_max": 3.5,
+          "moderate_max": 6.5,
+          "penalty_normal": 1.0,
+          "penalty_warning": 0.96,
+          "penalty_moderate": 0.88,
+          "penalty_severe": 0.70,
+          "degradation_max_level": 3,
+          "any_growth_is_critical": true
+        },
+        "O2": {
+          "normal_min": 15.0,
+          "warning_min": 10.0,
+          "moderate_min": 4.0,
+          "penalty_normal": 1.0,
+          "penalty_warning": 0.96,
+          "penalty_moderate": 0.88,
+          "penalty_severe": 0.70,
+          "degradation_max_level": 3
+        },
+        "CO2": {
+          "normal_max": 8.0,
+          "warning_max": 12.0,
+          "moderate_max": 16.0,
+          "penalty_normal": 1.0,
+          "penalty_warning": 0.96,
+          "penalty_moderate": 0.88,
+          "penalty_severe": 0.70,
+          "degradation_max_level": 3
+        },
+        "Moisture_Content": {
+          "normal": { "min": 60.0, "max": 75.0 },
+          "warning_min": 45.0,
+          "penalty_normal": 1.0,
+          "penalty_warning": 0.96,
+          "penalty_severe": 0.90,
+          "degradation_max_level": 2
+        }
+      },
+      "risk_levels": {
+        "fresh_min": 70,
+        "monitor_min": 40,
+        "near_spoilage_min": 15
+      },
+      "defaults": {
+        "Retort_Temperature": 121.0,
+        "Holding_Time": 20.0,
+        "F0": 25.0,
+        "Storage_Temperature": 25.0,
+        "Storage_Day": 0.0
+      },
+      "quality_defaults": {
+        "pH": 6.5,
+        "PV": 0.5,
+        "TPC": 0.2,
+        "O2": 18.0,
+        "CO2": 1.0,
+        "Moisture_Content": 68.0,
+        "L_Value": 65.0,
+        "a_Value": 4.0,
+        "b_Value": 12.0
+      }
+    },
+    "unretorted": {
+      "display_name": "Unretorted Products",
+      "description": "Non-thermally processed products.",
+      "f0_applicable": false,
+      "_status": "PENDING CLIENT CONFIRMATION — All threshold values below are provisional. Update when client provides confirmed scientific limits.",
+      "thresholds": {
+        "pH": {
+          "_status": "Pending Client Confirmation",
+          "normal": { "min": 5.5, "max": 7.0 },
+          "warning": { "min": 4.5, "max": 7.5 },
+          "moderate": { "min": 4.0, "max": 8.0 },
+          "penalty_normal": 1.0,
+          "penalty_warning": 0.96,
+          "penalty_moderate": 0.88,
+          "penalty_severe": 0.70,
+          "degradation_max_level": 3
+        },
+        "PV": {
+          "_status": "Pending Client Confirmation",
+          "normal_max": 2.0,
+          "warning_max": 5.0,
+          "moderate_max": 8.0,
+          "penalty_normal": 1.0,
+          "penalty_warning": 0.96,
+          "penalty_moderate": 0.88,
+          "penalty_severe": 0.70,
+          "degradation_max_level": 3
+        },
+        "TPC": {
+          "_status": "Pending Client Confirmation",
+          "normal_max": 100.0,
+          "warning_max": 1000.0,
+          "moderate_max": 10000.0,
+          "penalty_normal": 1.0,
+          "penalty_warning": 0.96,
+          "penalty_moderate": 0.88,
+          "penalty_severe": 0.70,
+          "degradation_max_level": 3,
+          "any_growth_is_critical": false
+        },
+        "O2": {
+          "_status": "Pending Client Confirmation",
+          "normal_min": 12.0,
+          "warning_min": 6.0,
+          "moderate_min": 3.0,
+          "penalty_normal": 1.0,
+          "penalty_warning": 0.96,
+          "penalty_moderate": 0.88,
+          "penalty_severe": 0.70,
+          "degradation_max_level": 3
+        },
+        "CO2": {
+          "_status": "Pending Client Confirmation",
+          "normal_max": 10.0,
+          "warning_max": 15.0,
+          "moderate_max": 20.0,
+          "penalty_normal": 1.0,
+          "penalty_warning": 0.96,
+          "penalty_moderate": 0.88,
+          "penalty_severe": 0.70,
+          "degradation_max_level": 3
+        },
+        "Moisture_Content": {
+          "_status": "Pending Client Confirmation",
+          "normal": { "min": 55.0, "max": 80.0 },
+          "warning_min": 40.0,
+          "penalty_normal": 1.0,
+          "penalty_warning": 0.96,
+          "penalty_severe": 0.90,
+          "degradation_max_level": 2
+        }
+      },
+      "risk_levels": {
+        "fresh_min": 70,
+        "monitor_min": 40,
+        "near_spoilage_min": 15
+      },
+      "defaults": {
+        "Storage_Temperature": 25.0,
+        "Storage_Day": 0.0
+      },
+      "quality_defaults": {
+        "pH": 6.5,
+        "PV": 0.5,
+        "TPC": 0.2,
+        "O2": 18.0,
+        "CO2": 1.0,
+        "Moisture_Content": 68.0,
+        "L_Value": 65.0,
+        "a_Value": 4.0,
+        "b_Value": 12.0
+      }
+    }
+  },
+  "package_statuses": [
+    "Normal",
+    "Seal_Failure",
+    "Leakage",
+    "Damaged_Package",
+    "Bulged"
+  ]
+}
