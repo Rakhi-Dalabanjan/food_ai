@@ -522,7 +522,7 @@ def estimate_quality(data: ManualPredictionRequest):
     try:
         input_dict = {k: v for k, v in data.dict().items() if v is not None}
         product_type = input_dict.pop("Product_Type", "Retorted")
-        package_status = input_dict.pop("Package_Status", "Normal")
+        input_dict.pop("Package_Status", None)
 
         if len(input_dict) < 1:
             raise HTTPException(
