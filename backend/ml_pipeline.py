@@ -39,6 +39,39 @@ QUALITY_FEATURES = [
 FEATURES = BASE_FEATURES + QUALITY_FEATURES
 TARGET = "Shelf_Life_Remaining"
 
+def safe_float(val, default=0.0):
+    """Safely converts string or other formats (like 'ND' or 'TNTC') to float for processing."""
+    if pd.isnull(val):
+        return default
+    try:
+        s = str(val).strip().upper()
+        if "ND" in s:
+            return 0.0
+        if "TNTC" in s:
+            return 99999.0
+        import re
+        m = re.search(r"[-+]?\d*\.\d+|\d+", s)
+        if m:
+            return float(m.group())
+        return float(val)
+    except Exception:
+        return default
+
+
+def load_thresholds():
+    """Loads and parses the quality_thresholds.json file dynamically."""
+    import json
+    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "quality_thresholds.json")
+    if not os.path.exists(config_path):
+        config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "quality_thresholds.json")
+    try:
+        with open(config_path, "r") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"Error loading thresholds configuration: {e}")
+        return None
+
+
 class MultiOutputQualityModel:
     def __init__(self, models):
         self.models = models
@@ -215,107 +248,112 @@ def load_models():
     return joblib.load(QUALITY_MODEL_PATH), joblib.load(MODEL_PATH)
 
 
-def get_row_penalty_multiplier(row) -> float:
+def get_row_penalty_multiplier(row, product_type="retorted") -> float:
     multiplier = 1.0
 
+    pt = str(product_type).lower()
+    if pt not in ["retorted", "unretorted"]:
+        pt = "retorted"
+
+    thresholds_config = load_thresholds()
+    if not thresholds_config:
+        return 1.0
+    config = thresholds_config["product_types"][pt]["thresholds"]
+
     # pH:
-    # 6.2–6.8: No penalty
-    # 5.5–6.1: Small reduction
-    # 4.8–5.4: Moderate reduction
-    # <4.8: Strong reduction
     ph = row.get("pH", 6.5)
-    if ph >= 6.2 and ph <= 6.8:
-        multiplier *= 1.0
-    elif (ph >= 5.5 and ph < 6.2) or (ph > 6.8 and ph <= 7.2):
-        multiplier *= 0.96
-    elif (ph >= 4.8 and ph < 5.5) or (ph > 7.2 and ph <= 7.8):
-        multiplier *= 0.88
-    else:  # < 4.8 or > 7.8
-        multiplier *= 0.70
+    ph_cfg = config["pH"]
+    normal = ph_cfg["normal"]
+    warning = ph_cfg["warning"]
+    moderate = ph_cfg["moderate"]
+    if ph >= normal["min"] and ph <= normal["max"]:
+        multiplier *= ph_cfg["penalty_normal"]
+    elif (ph >= warning["min"] and ph < normal["min"]) or (ph > normal["max"] and ph <= warning["max"]):
+        multiplier *= ph_cfg["penalty_warning"]
+    elif (ph >= moderate["min"] and ph < warning["min"]) or (ph > warning["max"] and ph <= moderate["max"]):
+        multiplier *= ph_cfg["penalty_moderate"]
+    else:
+        multiplier *= ph_cfg["penalty_severe"]
 
     # Moisture (Moisture_Content):
-    # 60–70: Normal
-    # 45–59: Moderate impact
-    # <45: Shelf life reduction
-    # Do not classify aggressively.
     mc = row.get("Moisture_Content", 68.0)
-    if mc >= 60.0 and mc <= 75.0:
-        multiplier *= 1.0
-    elif mc >= 45.0 and mc < 60.0:
-        multiplier *= 0.96
-    else:  # < 45.0 or > 75.0
-        multiplier *= 0.90  # Bounded to 0.90 to avoid aggressive classification
+    mc_cfg = config["Moisture_Content"]
+    normal = mc_cfg["normal"]
+    if mc >= normal["min"] and mc <= normal["max"]:
+        multiplier *= mc_cfg["penalty_normal"]
+    elif mc >= mc_cfg["warning_min"] and mc < normal["min"]:
+        multiplier *= mc_cfg["penalty_warning"]
+    else:
+        multiplier *= mc_cfg["penalty_severe"]
 
     # PV:
-    # < 1.2: Normal
-    # 1.2–3.0: Small reduction
-    # 3.0–5.5: Moderate reduction
-    # > 5.5: Strong reduction
     pv = row.get("PV", 0.5)
-    if pv <= 1.2:
-        multiplier *= 1.0
-    elif pv <= 3.0:
-        multiplier *= 0.96
-    elif pv <= 5.5:
-        multiplier *= 0.88
+    pv_cfg = config["PV"]
+    if pv <= pv_cfg["normal_max"]:
+        multiplier *= pv_cfg["penalty_normal"]
+    elif pv <= pv_cfg["warning_max"]:
+        multiplier *= pv_cfg["penalty_warning"]
+    elif pv <= pv_cfg["moderate_max"]:
+        multiplier *= pv_cfg["penalty_moderate"]
     else:
-        multiplier *= 0.70
+        multiplier *= pv_cfg["penalty_severe"]
 
     # TPC:
-    # < 1.8: Normal
-    # 1.8–3.5: Small reduction
-    # 3.5–6.5: Moderate reduction
-    # > 6.5: Strong reduction
-    tpc = row.get("TPC", 0.2)
-    if tpc <= 1.8:
-        multiplier *= 1.0
-    elif tpc <= 3.5:
-        multiplier *= 0.96
-    elif tpc <= 6.5:
-        multiplier *= 0.88
+    tpc = safe_float(row.get("TPC", 0.2), 0.2)
+    tpc_cfg = config["TPC"]
+    if tpc <= tpc_cfg["normal_max"]:
+        multiplier *= tpc_cfg["penalty_normal"]
+    elif tpc <= tpc_cfg["warning_max"]:
+        multiplier *= tpc_cfg["penalty_warning"]
+    elif tpc <= tpc_cfg["moderate_max"]:
+        multiplier *= tpc_cfg["penalty_moderate"]
     else:
-        multiplier *= 0.70
+        multiplier *= tpc_cfg["penalty_severe"]
 
     # O2:
-    # >= 15.0: Normal
-    # 10.0–15.0: Small reduction
-    # 4.0–10.0: Moderate reduction
-    # < 4.0: Strong reduction
     o2 = row.get("O2", 18.0)
-    if o2 >= 15.0:
-        multiplier *= 1.0
-    elif o2 >= 10.0:
-        multiplier *= 0.96
-    elif o2 >= 4.0:
-        multiplier *= 0.88
+    o2_cfg = config["O2"]
+    if o2 >= o2_cfg["normal_min"]:
+        multiplier *= o2_cfg["penalty_normal"]
+    elif o2 >= o2_cfg["warning_min"]:
+        multiplier *= o2_cfg["penalty_warning"]
+    elif o2 >= o2_cfg["moderate_min"]:
+        multiplier *= o2_cfg["penalty_moderate"]
     else:
-        multiplier *= 0.70
+        multiplier *= o2_cfg["penalty_severe"]
 
     # CO2:
-    # <= 8.0: Normal
-    # 8.0–12.0: Small reduction
-    # 12.0–16.0: Moderate reduction
-    # > 16.0: Strong reduction
     co2 = row.get("CO2", 1.0)
-    if co2 <= 8.0:
-        multiplier *= 1.0
-    elif co2 <= 12.0:
-        multiplier *= 0.96
-    elif co2 <= 16.0:
-        multiplier *= 0.88
+    co2_cfg = config["CO2"]
+    if co2 <= co2_cfg["normal_max"]:
+        multiplier *= co2_cfg["penalty_normal"]
+    elif co2 <= co2_cfg["warning_max"]:
+        multiplier *= co2_cfg["penalty_warning"]
+    elif co2 <= co2_cfg["moderate_max"]:
+        multiplier *= co2_cfg["penalty_moderate"]
     else:
-        multiplier *= 0.70
+        multiplier *= co2_cfg["penalty_severe"]
 
     return multiplier
 
 
-def get_row_risk_level(shelf_life: float, row) -> str:
+def get_row_risk_level(shelf_life: float, row, product_type="retorted") -> str:
+    pt = str(product_type).lower()
+    if pt not in ["retorted", "unretorted"]:
+        pt = "retorted"
+
+    thresholds_config = load_thresholds()
+    if not thresholds_config:
+        return "Fresh"
+    config = thresholds_config["product_types"][pt]["thresholds"]
+    risk_config = thresholds_config["product_types"][pt]["risk_levels"]
+
     # 1. Base risk from shelf life
-    if shelf_life >= 70:
+    if shelf_life >= risk_config["fresh_min"]:
         base_risk = "Fresh"
-    elif shelf_life >= 40:
+    elif shelf_life >= risk_config["monitor_min"]:
         base_risk = "Monitor"
-    elif shelf_life >= 15:
+    elif shelf_life >= risk_config["near_spoilage_min"]:
         base_risk = "Near Spoilage"
     else:
         base_risk = "Spoiled"
@@ -325,11 +363,15 @@ def get_row_risk_level(shelf_life: float, row) -> str:
 
     # pH
     ph = row.get("pH", 6.5)
-    if ph >= 6.2 and ph <= 6.8:
+    ph_cfg = config["pH"]
+    normal = ph_cfg["normal"]
+    warning = ph_cfg["warning"]
+    moderate = ph_cfg["moderate"]
+    if ph >= normal["min"] and ph <= normal["max"]:
         ph_deg = 0
-    elif (ph >= 5.5 and ph < 6.2) or (ph > 6.8 and ph <= 7.2):
+    elif (ph >= warning["min"] and ph < normal["min"]) or (ph > normal["max"] and ph <= warning["max"]):
         ph_deg = 1
-    elif (ph >= 4.8 and ph < 5.5) or (ph > 7.2 and ph <= 7.8):
+    elif (ph >= moderate["min"] and ph < warning["min"]) or (ph > warning["max"] and ph <= moderate["max"]):
         ph_deg = 2
     else:
         ph_deg = 3
@@ -337,33 +379,37 @@ def get_row_risk_level(shelf_life: float, row) -> str:
 
     # Moisture (Moisture_Content)
     mc = row.get("Moisture_Content", 68.0)
-    if mc >= 60.0 and mc <= 75.0:
+    mc_cfg = config["Moisture_Content"]
+    normal = mc_cfg["normal"]
+    if mc >= normal["min"] and mc <= normal["max"]:
         mc_deg = 0
-    elif mc >= 45.0 and mc < 60.0:
+    elif mc >= mc_cfg["warning_min"] and mc < normal["min"]:
         mc_deg = 1
     else:
-        mc_deg = 2  # Treat as moderate impact, do not classify aggressively
+        mc_deg = 2
     degradations.append(mc_deg)
 
     # PV
     pv = row.get("PV", 0.5)
-    if pv <= 1.2:
+    pv_cfg = config["PV"]
+    if pv <= pv_cfg["normal_max"]:
         pv_deg = 0
-    elif pv <= 3.0:
+    elif pv <= pv_cfg["warning_max"]:
         pv_deg = 1
-    elif pv <= 5.5:
+    elif pv <= pv_cfg["moderate_max"]:
         pv_deg = 2
     else:
         pv_deg = 3
     degradations.append(pv_deg)
 
     # TPC
-    tpc = row.get("TPC", 0.2)
-    if tpc <= 1.8:
+    tpc = safe_float(row.get("TPC", 0.2), 0.2)
+    tpc_cfg = config["TPC"]
+    if tpc <= tpc_cfg["normal_max"]:
         tpc_deg = 0
-    elif tpc <= 3.5:
+    elif tpc <= tpc_cfg["warning_max"]:
         tpc_deg = 1
-    elif tpc <= 6.5:
+    elif tpc <= tpc_cfg["moderate_max"]:
         tpc_deg = 2
     else:
         tpc_deg = 3
@@ -371,11 +417,12 @@ def get_row_risk_level(shelf_life: float, row) -> str:
 
     # O2
     o2 = row.get("O2", 18.0)
-    if o2 >= 15.0:
+    o2_cfg = config["O2"]
+    if o2 >= o2_cfg["normal_min"]:
         o2_deg = 0
-    elif o2 >= 10.0:
+    elif o2 >= o2_cfg["warning_min"]:
         o2_deg = 1
-    elif o2 >= 4.0:
+    elif o2 >= o2_cfg["moderate_min"]:
         o2_deg = 2
     else:
         o2_deg = 3
@@ -383,11 +430,12 @@ def get_row_risk_level(shelf_life: float, row) -> str:
 
     # CO2
     co2 = row.get("CO2", 1.0)
-    if co2 <= 8.0:
+    co2_cfg = config["CO2"]
+    if co2 <= co2_cfg["normal_max"]:
         co2_deg = 0
-    elif co2 <= 12.0:
+    elif co2 <= co2_cfg["warning_max"]:
         co2_deg = 1
-    elif co2 <= 16.0:
+    elif co2 <= co2_cfg["moderate_max"]:
         co2_deg = 2
     else:
         co2_deg = 3
@@ -398,16 +446,9 @@ def get_row_risk_level(shelf_life: float, row) -> str:
     num_strong = sum(1 for d in degradations if d == 3)
 
     # Risk logic hierarchy
-    # Fresh: Only if quality indicators mostly healthy (no moderate/strong degradations, and <= 1 small degradation)
     mostly_healthy = (num_moderate_or_strong == 0) and (num_degraded <= 1)
-
-    # Spoiled: Major degradation (>= 2 strong, or >= 4 moderate/strong)
     is_spoiled = (num_strong >= 2) or (num_moderate_or_strong >= 4)
-
-    # Near Spoilage: Multiple indicators degrade (>= 3 degraded or >= 1 strong)
     is_near_spoilage = (num_degraded >= 3) or (num_strong >= 1)
-
-    # Monitor: If one or two indicators degrade (>= 1 degraded)
     is_monitor = (num_degraded >= 1)
 
     if is_spoiled:
@@ -419,7 +460,6 @@ def get_row_risk_level(shelf_life: float, row) -> str:
     else:
         deg_risk = "Fresh"
 
-    # Severity lookup to ensure we use the worse (most severe) risk level
     severity = {"Fresh": 0, "Monitor": 1, "Near Spoilage": 2, "Spoiled": 3}
     
     if severity[deg_risk] > severity[base_risk]:
@@ -427,7 +467,16 @@ def get_row_risk_level(shelf_life: float, row) -> str:
     return base_risk
 
 
-def predict_data(df: pd.DataFrame):
+def predict_data(df: pd.DataFrame, product_type="retorted"):
+    pt = str(product_type).lower()
+    if pt not in ["retorted", "unretorted"]:
+        pt = "retorted"
+
+    thresholds_config = load_thresholds()
+    if not thresholds_config:
+        raise Exception("Configuration thresholds not found.")
+    pt_config = thresholds_config["product_types"][pt]
+
     quality_pipeline, shelf_life_pipeline = load_models()
     if shelf_life_pipeline is None:
         raise Exception("Models not trained yet.")
@@ -441,13 +490,7 @@ def predict_data(df: pd.DataFrame):
             working_df[f] = np.nan
 
     # 1. Fill missing BASE_FEATURES with Defaults first
-    base_defaults = {
-        "Retort_Temperature": 121.0,
-        "Holding_Time": 20.0,
-        "F0": 25.0,
-        "Storage_Temperature": 25.0,
-        "Storage_Day": 0.0,
-    }
+    base_defaults = pt_config["defaults"]
     for feat, default_val in base_defaults.items():
         if feat in working_df.columns:
             working_df[feat] = working_df[feat].fillna(default_val)
@@ -458,7 +501,16 @@ def predict_data(df: pd.DataFrame):
     missing_quality = [qf for qf in QUALITY_FEATURES if working_df[qf].isnull().any()]
     if missing_quality and quality_pipeline is not None:
         X_base = working_df[BASE_FEATURES]
-        predicted_quality = quality_pipeline.predict(X_base)
+        # Guarantee all 5 base features exist for quality pipeline compatibility
+        X_base_clean = X_base.copy()
+        retorted_base_defaults = thresholds_config["product_types"]["retorted"]["defaults"]
+        for feat, val in retorted_base_defaults.items():
+            if feat not in X_base_clean.columns:
+                X_base_clean[feat] = val
+            else:
+                X_base_clean[feat] = X_base_clean[feat].fillna(val)
+
+        predicted_quality = quality_pipeline.predict(X_base_clean[BASE_FEATURES])
         predicted_quality_df = pd.DataFrame(
             predicted_quality, columns=QUALITY_FEATURES, index=df.index
         )
@@ -528,17 +580,7 @@ def predict_data(df: pd.DataFrame):
                         working_df.loc[idx, key] = float(np.clip(val, low, high))
 
     # 3. Fill any remaining missing quality features with Defaults
-    quality_defaults = {
-        "pH": 6.5,
-        "PV": 0.5,
-        "TPC": 0.2,
-        "O2": 18.0,
-        "CO2": 1.0,
-        "Moisture_Content": 68.0,
-        "L_Value": 65.0,
-        "a_Value": 4.0,
-        "b_Value": 12.0,
-    }
+    quality_defaults = pt_config["quality_defaults"]
     for feat, default_val in quality_defaults.items():
         if feat in working_df.columns:
             working_df[feat] = working_df[feat].fillna(default_val)
@@ -552,6 +594,15 @@ def predict_data(df: pd.DataFrame):
     X_model["a_Value"] = 4.0 + (working_df["a_Value"] - 4.0) * 0.15
     X_model["b_Value"] = 12.0 + (working_df["b_Value"] - 12.0) * 0.15
 
+    # Guarantee all 5 base features used for shelf life prediction exist (for compatibility)
+    retorted_base_defaults = thresholds_config["product_types"]["retorted"]["defaults"]
+    for feat, val in retorted_base_defaults.items():
+        if feat not in X_model.columns or pd.isnull(X_model.loc[:, feat]).any():
+            if feat not in X_model.columns:
+                X_model[feat] = val
+            else:
+                X_model[feat] = X_model[feat].fillna(val)
+
     X = X_model[FEATURES]
     predictions = shelf_life_pipeline.predict(X)
 
@@ -559,7 +610,7 @@ def predict_data(df: pd.DataFrame):
     predictions = np.clip(predictions, 0, 90)
 
     # Apply soft penalties to the predictions before calibration bounds
-    multipliers = np.array([get_row_penalty_multiplier(working_df.iloc[i]) for i in range(len(working_df))])
+    multipliers = np.array([get_row_penalty_multiplier(working_df.iloc[i], product_type=product_type) for i in range(len(working_df))])
     predictions = predictions * multipliers
 
     # Apply calibration based on Quality Score to avoid over-reducing shelf life
@@ -599,6 +650,6 @@ def predict_data(df: pd.DataFrame):
     predictions = np.clip(predictions, lower_bound, upper_bound)
     predictions = np.clip(predictions, 0.0, 90.0)
 
-    risk_levels = [get_row_risk_level(predictions[i], working_df.iloc[i]) for i in range(len(predictions))]
+    risk_levels = [get_row_risk_level(predictions[i], working_df.iloc[i], product_type=product_type) for i in range(len(predictions))]
 
     return predictions, risk_levels, working_df[QUALITY_FEATURES]

@@ -330,13 +330,7 @@ async def predict_endpoint(
                 detail="Please provide at least 2 parameters in your file.",
             )
 
-        # Check if predict_data supports product_type parameter using introspection
-        import inspect
-        sig = inspect.signature(predict_data)
-        if "product_type" in sig.parameters:
-            predictions, risk_levels, quality_df = predict_data(mapped_df, product_type=product_type)
-        else:
-            predictions, risk_levels, quality_df = predict_data(mapped_df)
+        predictions, risk_levels, quality_df = predict_data(mapped_df, product_type=product_type)
 
         # Retrieve row-level mappings if mapped, otherwise use default
         product_type_col = col_mapping.get("Product_Type")
@@ -458,13 +452,7 @@ def manual_predict(data: ManualPredictionRequest, db: Session = Depends(get_db))
 
         df = pd.DataFrame([input_dict])
 
-        # Check if predict_data supports product_type parameter using introspection
-        import inspect
-        sig = inspect.signature(predict_data)
-        if "product_type" in sig.parameters:
-            predictions, risk_levels, quality_df = predict_data(df, product_type=product_type)
-        else:
-            predictions, risk_levels, quality_df = predict_data(df)
+        predictions, risk_levels, quality_df = predict_data(df, product_type=product_type)
 
         shelf_life = float(predictions[0])
         risk_level = risk_levels[0]
@@ -543,13 +531,7 @@ def estimate_quality(data: ManualPredictionRequest):
 
         df = pd.DataFrame([input_dict])
 
-        # Check if predict_data supports product_type parameter using introspection
-        import inspect
-        sig = inspect.signature(predict_data)
-        if "product_type" in sig.parameters:
-            _, _, quality_df = predict_data(df, product_type=product_type)
-        else:
-            _, _, quality_df = predict_data(df)
+        _, _, quality_df = predict_data(df, product_type=product_type)
 
         # Merge the original inputs with the predicted ones for a full form set
         full_data = quality_df.iloc[0].to_dict()
