@@ -8,7 +8,7 @@ import shutil
 import os
 import json
 import logging
-from typing import Dict, Optional
+from typing import Dict, Optional, List, Tuple
 
 from .database import engine, Base, get_db
 from .models import PredictionLog, ModelMetrics
@@ -54,7 +54,10 @@ def run_db_migrations(engine):
         columns_to_add = [
             ("product_type", "TEXT"),
             ("package_status", "TEXT"),
-            ("oxidation_rate", "REAL")
+            ("oxidation_rate", "REAL"),
+            ("product_status", "TEXT"),
+            ("rejection_reasons", "TEXT"),
+            ("overall_acceptability", "REAL")
         ]
 
         migrated_cols = []
@@ -135,6 +138,7 @@ MAPPING_SUGGESTIONS = {
     "Product_Type": ["product_type", "producttype", "type", "product_type_selection"],
     "Sample_ID": ["sample_id", "sampleid", "sample_code", "samplecode", "sample", "sample_name", "samplename"],
     "Package_Status": ["package_status", "packagestatus", "pouch_condition", "pouchcondition", "package_condition", "packagecondition"],
+    "Overall_Acceptability": ["overall_acceptability", "overallacceptability", "overall_acceptability_score", "sensory_acceptability", "overall_sensory_index", "overall", "acceptability", "osi"],
 }
 
 import re
@@ -299,6 +303,7 @@ class ManualPredictionRequest(BaseModel):
     L_Value: Optional[float] = None
     a_Value: Optional[float] = None
     b_Value: Optional[float] = None
+    Overall_Acceptability: Optional[float] = None
     Product_Type: Optional[str] = "Retorted"
     Package_Status: Optional[str] = "Normal"
 
@@ -339,6 +344,117 @@ def validate_metadata(product_type: str, package_status: str):
         )
 
     return matched_pt, package_status
+
+
+def parse_numeric(val) -> Optional[float]:
+    """Safely converts string/number/float to float. Returns None for NaN, None, empty, ND."""
+    if val is None or pd.isnull(val):
+        return None
+    try:
+        s = str(val).strip().upper()
+        if not s or s in ["NAN", "NONE", "NULL", "N/A"]:
+            return None
+        if "ND" in s:
+            return 0.0
+        if "TNTC" in s:
+            return 99999.0
+        m = re.search(r"[-+]?\d*\.\d+|\d+", s)
+        if m:
+            return float(m.group())
+        return float(val)
+    except Exception:
+        return None
+
+
+def validate_quality_acceptance(
+    row_data: dict,
+    product_type: str = "Retorted",
+    package_status: str = "Normal",
+    overall_acceptability: Optional[float] = None,
+    initial_moisture: Optional[float] = None,
+    is_manual: bool = False
+) -> Tuple[str, List[str]]:
+    """
+    Quality Acceptance Validation Layer.
+    Executes AFTER ML prediction and evaluates ONLY supplied/actual measurement values.
+    Missing / blank / NaN values are NOT evaluated and NEVER cause rejection.
+    """
+    from typing import List, Tuple
+    reasons = []
+
+    pt_str = str(product_type).strip().lower()
+    if "nrt" in pt_str or "unretort" in pt_str or "non-retort" in pt_str:
+        pt = "unretorted"
+    else:
+        pt = "retorted"
+
+    # 1. Package Failure Rule
+    ps_str = str(package_status).strip().lower().replace("_", " ")
+    package_failures = ["seal failure", "leakage", "bulging", "bulged", "damaged package", "damaged pouch"]
+    if ps_str in package_failures:
+        formatted_ps = str(package_status).replace("_", " ")
+        reasons.append(f"Package failure: {formatted_ps}")
+
+    # 2. PV Rule (PV <= 10)
+    pv = parse_numeric(row_data.get("PV"))
+    if pv is not None:
+        if pv > 10.0:
+            reasons.append(f"PV exceeded acceptable limit ({pv} > 10)")
+
+    # 3. TPC Rule (Retorted: TPC <= 0; Unretorted: TPC <= 5)
+    tpc = parse_numeric(row_data.get("TPC"))
+    if tpc is not None:
+        if pt == "retorted":
+            if tpc > 0.0:
+                reasons.append(f"TPC exceeded acceptable limit ({tpc} > 0)")
+        else:
+            if tpc > 5.0:
+                reasons.append(f"TPC exceeded acceptable limit ({tpc} > 5)")
+
+    # 4. pH Rule (pH >= 4.9)
+    ph = parse_numeric(row_data.get("pH"))
+    if ph is not None:
+        if ph < 4.9:
+            reasons.append(f"pH below acceptable limit ({ph} < 4.9)")
+
+    # 5. Moisture Rule (Retorted only: relative change <= 10% from actual sample initial moisture baseline)
+    mc = parse_numeric(row_data.get("Moisture_Content"))
+    if mc is not None and pt == "retorted":
+        init_m = parse_numeric(initial_moisture) if initial_moisture is not None else parse_numeric(row_data.get("Initial_Moisture"))
+        if init_m is not None and init_m > 0:
+            pct_change = abs(mc - init_m) / init_m * 100.0
+            if pct_change > 10.0:
+                reasons.append(f"Moisture relative change exceeded 10% limit ({pct_change:.1f}% change from initial {init_m:.2f}%)")
+        elif is_manual:
+            base = 68.0
+            pct_change = abs(mc - base) / base * 100.0
+            if pct_change > 10.0:
+                reasons.append(f"Moisture relative change exceeded 10% limit ({mc}% outside {base*0.9:.1f}% - {base*1.1:.1f}%)")
+        else:
+            # Missing experimental baseline -> DO NOT REJECT
+            pass
+
+    # 6. O2 Rule (O2 <= 25)
+    o2 = parse_numeric(row_data.get("O2"))
+    if o2 is not None:
+        if o2 > 25.0:
+            reasons.append(f"O2 exceeded acceptable limit ({o2}% > 25%)")
+
+    # 7. CO2 Rule (CO2 <= 25)
+    co2 = parse_numeric(row_data.get("CO2"))
+    if co2 is not None:
+        if co2 > 25.0:
+            reasons.append(f"CO2 exceeded acceptable limit ({co2}% > 25%)")
+
+    # 8. Overall Acceptability Rule (Overall Acceptability >= 5)
+    oa_raw = overall_acceptability if overall_acceptability is not None else row_data.get("Overall_Acceptability")
+    oa = parse_numeric(oa_raw)
+    if oa is not None:
+        if oa < 5.0:
+            reasons.append(f"Overall Acceptability below acceptable limit ({oa} < 5)")
+
+    status = "ACCEPTABLE" if len(reasons) == 0 else "REJECTED"
+    return status, reasons
 
 
 def calculate_oxidation_rate(pv, storage_day):
@@ -470,18 +586,99 @@ async def predict_endpoint(
         predictions, risk_levels, quality_df = predict_data(mapped_df, product_type=row_product_types)
 
         row_oxidation_rates = []
+        row_product_statuses = []
+        row_rejection_reasons = []
+        row_overall_acceptabilities = []
+        row_experimental_statuses = []
+
+        # Build initial moisture lookup map from uploaded file per sample group
+        sample_id_col = col_mapping.get("Sample_ID") or ("Sample ID" if "Sample ID" in df.columns else "Sample_ID")
+        day_col = col_mapping.get("Storage_Day") or ("Storage Time in Days" if "Storage Time in Days" in df.columns else "Storage_Day")
+        moist_col = col_mapping.get("Moisture_Content") or ("Moisture Content %" if "Moisture Content %" in df.columns else "Moisture_Content")
+
+        initial_moisture_map = {}
+        if sample_id_col in df.columns and moist_col in df.columns:
+            for s_id, grp in df.groupby(sample_id_col):
+                if pd.isnull(s_id): continue
+                s_key = str(s_id).strip()
+                if day_col in grp.columns:
+                    days_parsed = grp[day_col].apply(parse_numeric)
+                    min_day = days_parsed.min()
+                    day0_rows = grp[days_parsed == min_day]
+                else:
+                    day0_rows = grp
+                m_vals = [parse_numeric(v) for v in day0_rows[moist_col].dropna() if parse_numeric(v) is not None and parse_numeric(v) > 0]
+                if m_vals:
+                    initial_moisture_map[s_key] = float(np.mean(m_vals))
+
+        status_col = None
+        for c in ["Sample Status", "Sample_Status", "Experimental_Status", "Status"]:
+            if c in df.columns:
+                status_col = c
+                break
+        
+        obs_col = None
+        for c in ["Observation", "Observations"]:
+            if c in df.columns:
+                obs_col = c
+                break
 
         # Update original df with predictions and also estimated quality values
         df["Shelf_Life"] = predictions
+        df["Predicted_Shelf_Life"] = predictions
         df["Risk_Level"] = risk_levels
 
         for feature in QUALITY_FEATURES:
             df[f"Estimated_{feature}"] = quality_df[feature].values
 
-        # Log to DB and collect row-level V2 values
+        # Log to DB and collect row-level V2 values & acceptance statuses
         for idx, row in mapped_df.iterrows():
             row_pt = row_product_types[idx]
             row_ps = row_package_statuses[idx]
+
+            # Extract client's original experimental status
+            exp_status = "Acceptable"
+            if status_col and pd.notnull(df.loc[idx, status_col]) and str(df.loc[idx, status_col]).strip() != "":
+                exp_status = str(df.loc[idx, status_col]).strip()
+            elif obs_col and pd.notnull(df.loc[idx, obs_col]) and str(df.loc[idx, obs_col]).strip() != "":
+                exp_status = str(df.loc[idx, obs_col]).strip()
+            row_experimental_statuses.append(exp_status)
+
+            # Collect raw inputs provided for this row
+            row_raw_inputs = {}
+            for feat in FEATURES:
+                uploaded_col = col_mapping.get(feat)
+                if uploaded_col and uploaded_col in df.columns:
+                    row_raw_inputs[feat] = df.loc[idx, uploaded_col]
+                elif feat in df.columns:
+                    row_raw_inputs[feat] = df.loc[idx, feat]
+
+            oa_col = col_mapping.get("Overall_Acceptability")
+            oa_val = None
+            if oa_col and oa_col in df.columns:
+                oa_val = df.loc[idx, oa_col]
+            elif "Overall_Acceptability" in df.columns:
+                oa_val = df.loc[idx, "Overall_Acceptability"]
+            row_raw_inputs["Overall_Acceptability"] = oa_val
+            row_overall_acceptabilities.append(oa_val)
+
+            # Resolve initial moisture for this row's sample group
+            row_s_id = None
+            if sample_id_col in df.columns and pd.notnull(df.loc[idx, sample_id_col]):
+                row_s_id = str(df.loc[idx, sample_id_col]).strip()
+            row_init_moisture = initial_moisture_map.get(row_s_id) if row_s_id else None
+
+            # Validate quality acceptance using actual supplied inputs ONLY
+            p_status, p_reasons = validate_quality_acceptance(
+                row_raw_inputs,
+                product_type=row_pt,
+                package_status=row_ps,
+                overall_acceptability=oa_val,
+                initial_moisture=row_init_moisture,
+                is_manual=False
+            )
+            row_product_statuses.append(p_status)
+            row_rejection_reasons.append("; ".join(p_reasons) if p_reasons else "")
 
             # Compute oxidation rate safely using final PV (user supplied or estimated) and Storage_Day
             final_pv = row.get("PV")
@@ -531,15 +728,23 @@ async def predict_endpoint(
                     product_type=row_pt,
                     package_status=row_ps,
                     oxidation_rate=ox_rate,
+                    product_status=p_status,
+                    rejection_reasons="; ".join(p_reasons) if p_reasons else None,
+                    overall_acceptability=parse_numeric(oa_val),
                 )
                 db.add(log)
 
         db.commit()
 
-        # Add V2 output attributes to output response DataFrame for UI display
+        # Add V2 output attributes to output response DataFrame for UI display & CSV export
         df["Product_Type"] = row_product_types
         df["Package_Status"] = row_package_statuses
         df["Oxidation_Rate"] = row_oxidation_rates
+        df["Experimental_Status"] = row_experimental_statuses
+        df["Software_Status"] = row_product_statuses
+        df["Product_Status"] = row_product_statuses
+        df["Rejection_Reason"] = row_rejection_reasons
+        df["Overall_Acceptability"] = row_overall_acceptabilities
 
         return clean_nans(df.to_dict(orient="records"))
     except HTTPException:
@@ -582,6 +787,15 @@ def manual_predict(data: ManualPredictionRequest, db: Session = Depends(get_db))
 
         ox_rate = calculate_oxidation_rate(pv_val, day_val)
 
+        # Quality Acceptance Validation Layer using actual user inputs ONLY
+        p_status, p_reasons = validate_quality_acceptance(
+            data.dict(),
+            product_type=product_type,
+            package_status=package_status,
+            overall_acceptability=data.Overall_Acceptability,
+            is_manual=True
+        )
+
         log = PredictionLog(
             retort_temperature=data.Retort_Temperature,
             holding_time=data.Holding_Time,
@@ -602,6 +816,9 @@ def manual_predict(data: ManualPredictionRequest, db: Session = Depends(get_db))
             product_type=product_type,
             package_status=package_status,
             oxidation_rate=ox_rate,
+            product_status=p_status,
+            rejection_reasons="; ".join(p_reasons) if p_reasons else None,
+            overall_acceptability=data.Overall_Acceptability,
         )
         db.add(log)
         db.commit()
@@ -609,6 +826,8 @@ def manual_predict(data: ManualPredictionRequest, db: Session = Depends(get_db))
         return {
             "shelf_life": round(shelf_life, 1),
             "risk_level": risk_level,
+            "product_status": p_status,
+            "rejection_reasons": p_reasons,
             "estimated_quality": estimated_quality,
         }
     except HTTPException:

@@ -224,6 +224,8 @@ const CsvPrediction = () => {
 
   // Metrics & Pagination calculation
   const totalRows = Array.isArray(results) ? results.length : 0;
+  const acceptableCount = Array.isArray(results) ? results.filter((r) => r?.Product_Status === "ACCEPTABLE").length : 0;
+  const rejectedCount = Array.isArray(results) ? results.filter((r) => r?.Product_Status === "REJECTED").length : 0;
   const freshCount = Array.isArray(results) ? results.filter((r) => r?.Risk_Level === "Fresh").length : 0;
   const monitorCount = Array.isArray(results) ? results.filter((r) => r?.Risk_Level === "Monitor").length : 0;
   const nearSpoilageCount = Array.isArray(results) ? results.filter((r) => r?.Risk_Level === "Near Spoilage").length : 0;
@@ -486,17 +488,21 @@ const CsvPrediction = () => {
 
       {Array.isArray(results) && results.length > 0 && !loading && (
         <div className="space-y-6 animate-in zoom-in-95 duration-500">
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
             <div className="bg-surface p-4 rounded-xl border border-white/5 flex flex-col justify-between">
               <span className="text-xs text-slate-400 font-semibold uppercase">Total Batches</span>
               <span className="text-2xl font-bold text-white mt-1">{totalRows}</span>
             </div>
-            <div className="bg-surface p-4 rounded-xl border border-green-500/20 bg-green-500/5 flex flex-col justify-between">
-              <span className="text-xs text-green-400 font-semibold uppercase">Fresh</span>
-              <span className="text-2xl font-bold text-green-400 mt-1">{freshCount}</span>
+            <div className="bg-surface p-4 rounded-xl border border-emerald-500/20 bg-emerald-500/5 flex flex-col justify-between">
+              <span className="text-xs text-emerald-400 font-semibold uppercase">Acceptable</span>
+              <span className="text-2xl font-bold text-emerald-400 mt-1">{acceptableCount}</span>
+            </div>
+            <div className="bg-surface p-4 rounded-xl border border-red-500/20 bg-red-500/5 flex flex-col justify-between">
+              <span className="text-xs text-red-400 font-semibold uppercase">Rejected</span>
+              <span className="text-2xl font-bold text-red-400 mt-1">{rejectedCount}</span>
             </div>
             <div className="bg-surface p-4 rounded-xl border border-blue-500/20 bg-blue-500/5 flex flex-col justify-between">
-              <span className="text-xs text-blue-400 font-semibold uppercase">Monitor</span>
+              <span className="text-xs text-blue-400 font-semibold uppercase">Monitor Risk</span>
               <span className="text-2xl font-bold text-blue-400 mt-1">{monitorCount}</span>
             </div>
             <div className="bg-surface p-4 rounded-xl border border-orange-500/20 bg-orange-500/5 flex flex-col justify-between">
@@ -540,7 +546,7 @@ const CsvPrediction = () => {
                     <th className="px-6 py-4 font-semibold">#</th>
                     {results.length > 0 &&
                       Object.keys(results[0])
-                        .filter((col) => !["Shelf_Life", "Risk_Level", "Product_Type", "Package_Status", "Oxidation_Rate"].includes(col) && !col.startsWith("Estimated_"))
+                        .filter((col) => !["Shelf_Life", "Predicted_Shelf_Life", "Risk_Level", "Product_Type", "Package_Status", "Oxidation_Rate", "Product_Status", "Software_Status", "Experimental_Status", "Rejection_Reason"].includes(col) && !col.startsWith("Estimated_"))
                         .slice(0, 5)
                         .map((col) => (
                           <th key={col} className="px-6 py-4 font-semibold">
@@ -548,11 +554,10 @@ const CsvPrediction = () => {
                           </th>
                         ))}
                     <th className="px-6 py-4 font-semibold">Product Type</th>
-                    <th className="px-6 py-4 font-semibold">Package Status</th>
-                    {results.length > 0 && results[0].Oxidation_Rate !== undefined && (
-                      <th className="px-6 py-4 font-semibold">Oxidation Rate</th>
-                    )}
                     <th className="px-6 py-4 font-semibold text-emerald-400">Predicted Shelf Life</th>
+                    <th className="px-6 py-4 font-semibold">Experimental Status</th>
+                    <th className="px-6 py-4 font-semibold">Software Status</th>
+                    <th className="px-6 py-4 font-semibold">Rejection Reason(s)</th>
                     <th className="px-6 py-4 font-semibold">Risk Level</th>
                     <th className="px-6 py-4 font-semibold">Health & Quality Analysis</th>
                   </tr>
@@ -561,9 +566,11 @@ const CsvPrediction = () => {
                   {paginatedResults.map((row, idx) => {
                     const globalIdx = startIndex + idx + 1;
                     const inputCols = Object.keys(row).filter(
-                      (col) => !["Shelf_Life", "Risk_Level", "Product_Type", "Package_Status", "Oxidation_Rate"].includes(col) && !col.startsWith("Estimated_")
+                      (col) => !["Shelf_Life", "Predicted_Shelf_Life", "Risk_Level", "Product_Type", "Package_Status", "Oxidation_Rate", "Product_Status", "Software_Status", "Experimental_Status", "Rejection_Reason"].includes(col) && !col.startsWith("Estimated_")
                     ).slice(0, 5);
                     const health = getHealthRecommendation(row?.Risk_Level);
+                    const expStatus = row.Experimental_Status || row["Sample Status"] || row["Sample_Status"] || "Acceptable";
+                    const softStatus = row.Software_Status || row.Product_Status || "ACCEPTABLE";
 
                     return (
                       <tr
@@ -577,19 +584,32 @@ const CsvPrediction = () => {
                           </td>
                         ))}
                         <td className="px-6 py-4 text-slate-300 font-medium">{row.Product_Type || "N/A"}</td>
-                        <td className="px-6 py-4 text-slate-300 font-medium">{row.Package_Status || "N/A"}</td>
-                        {row.Oxidation_Rate !== undefined && (
-                          <td className="px-6 py-4 text-slate-300 font-medium">
-                            {row.Oxidation_Rate !== null && row.Oxidation_Rate !== ""
-                              ? Number(row.Oxidation_Rate).toFixed(4)
-                              : "N/A"}
-                          </td>
-                        )}
                         <td className="px-6 py-4 text-lg font-bold text-emerald-400">
                           {typeof row.Shelf_Life === "number" ? row.Shelf_Life.toFixed(1) : (row.Shelf_Life || "N/A")}{" "}
                           <span className="text-sm font-normal text-slate-400">
                             Days
                           </span>
+                        </td>
+                        <td className="px-6 py-4 text-slate-300 font-semibold">
+                          {expStatus}
+                        </td>
+                        <td className="px-6 py-4">
+                          {softStatus === "REJECTED" ? (
+                            <span className="px-3 py-1 rounded-full text-xs font-bold bg-red-500/20 text-red-400 border border-red-500/30">
+                              REJECTED
+                            </span>
+                          ) : (
+                            <span className="px-3 py-1 rounded-full text-xs font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                              ACCEPTABLE
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-6 py-4 text-xs font-medium text-slate-300 max-w-xs">
+                          {row.Rejection_Reason ? (
+                            <span className="text-red-300 font-medium">{row.Rejection_Reason}</span>
+                          ) : (
+                            <span className="text-slate-500 italic">None</span>
+                          )}
                         </td>
                         <td className="px-6 py-4">
                           <span

@@ -31,6 +31,7 @@ const ManualPrediction = () => {
     L_Value: "",
     a_Value: "",
     b_Value: "",
+    Overall_Acceptability: "",
   });
 
   const [loading, setLoading] = useState(false);
@@ -100,6 +101,7 @@ const ManualPrediction = () => {
       L_Value: "",
       a_Value: "",
       b_Value: "",
+      Overall_Acceptability: "",
     });
     setResult(null);
     setError(null);
@@ -125,6 +127,7 @@ const ManualPrediction = () => {
       L_Value: "60",
       a_Value: "5",
       b_Value: "15",
+      Overall_Acceptability: "8",
     });
     setProductType("retorted");
     setPackageStatus("Normal");
@@ -350,6 +353,11 @@ const ManualPrediction = () => {
       name: "b_Value",
       label: "b* Value",
       tooltip: "Measures yellow-blue color scale.",
+    },
+    {
+      name: "Overall_Acceptability",
+      label: "Overall Acceptability (1-9)",
+      tooltip: "Sensory acceptability score. Score below 5 indicates rejection.",
     },
   ];
 
@@ -611,7 +619,7 @@ const ManualPrediction = () => {
 
                 <div className="relative z-10">
                   <p className="text-slate-300 text-[12px] font-semibold uppercase tracking-[0.5px] opacity-90">
-                    Expected Shelf Life
+                    Predicted Remaining Shelf Life
                   </p>
                   <div className="flex items-baseline gap-2 mt-1">
                     <h3 className="text-[46px] leading-none font-bold text-white tracking-tighter drop-shadow-md">
@@ -621,6 +629,43 @@ const ManualPrediction = () => {
                       Days
                     </span>
                   </div>
+                </div>
+
+                {/* Product Acceptance Status Card */}
+                <div className="relative z-10 space-y-3 pt-4 border-t border-white/10">
+                  <p className="text-slate-300 text-[11px] font-bold uppercase tracking-[0.5px]">
+                    Product Status
+                  </p>
+                  <div className="flex items-center gap-3">
+                    {result.product_status === "REJECTED" ? (
+                      <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-red-500/20 border border-red-500/40 text-red-400 font-bold text-sm uppercase tracking-wider shadow-lg shadow-red-500/10">
+                        <XOctagon size={18} className="text-red-400" />
+                        REJECTED
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 font-bold text-sm uppercase tracking-wider shadow-lg shadow-emerald-500/10">
+                        <CheckCircle2 size={18} className="text-emerald-400" />
+                        ACCEPTABLE
+                      </div>
+                    )}
+                  </div>
+
+                  {result.product_status === "REJECTED" && result.rejection_reasons?.length > 0 && (
+                    <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-3.5 space-y-2 mt-2">
+                      <p className="text-red-300 font-bold text-[11px] uppercase tracking-wider flex items-center gap-1.5">
+                        <AlertTriangle size={14} className="text-red-400 shrink-0" />
+                        Rejection Reason(s)
+                      </p>
+                      <ul className="space-y-1 text-red-200 text-xs font-semibold">
+                        {result.rejection_reasons.map((reason, rIdx) => (
+                          <li key={rIdx} className="flex items-start gap-1.5">
+                            <span className="text-red-400 font-bold">•</span>
+                            <span>{reason}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
                 </div>
 
                 <div className="pt-6 border-t border-white/20 space-y-4 relative z-10">

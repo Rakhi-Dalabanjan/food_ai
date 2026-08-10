@@ -27,6 +27,9 @@ class PredictionLog(Base):
     product_type = Column(String, nullable=True)
     package_status = Column(String, nullable=True)
     oxidation_rate = Column(Float, nullable=True)
+    product_status = Column(String, nullable=True)
+    rejection_reasons = Column(String, nullable=True)
+    overall_acceptability = Column(Float, nullable=True)
 
 
 class ModelMetrics(Base):

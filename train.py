@@ -12,12 +12,16 @@ from backend.models import PredictionLog, ModelMetrics
 Base.metadata.create_all(bind=engine)
 
 if __name__ == "__main__":
-    dataset_path = "dataset/synthetic_food_data.csv"
+    print("Preparing experimental training dataset from 'My Experiment Readings M Tech.xlsx'...")
+    from dataset.prepare_experimental_dataset import prepare_experimental_dataset
+    df_train, stats = prepare_experimental_dataset()
+    
+    dataset_path = "dataset/client_experimental_prepared.csv"
     if not os.path.exists(dataset_path):
-        print("Dataset not found. Please run dataset/generate_data.py first.")
+        print("Dataset not found. Preparation failed.")
         sys.exit(1)
         
-    print("Training model...")
+    print("Training ML model on client experimental data...")
     metrics = train_and_save_model(dataset_path)
     print("Model trained successfully!")
     print(metrics)

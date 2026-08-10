@@ -13,6 +13,20 @@
       "is_confirmed": true,
       "requires_client_approval": false,
       "f0_applicable": true,
+      "acceptance_rules": {
+        "PV": { "max": 10.0 },
+        "TPC": { "max": 0.0 },
+        "pH": { "min": 4.9 },
+        "Moisture_Content": {
+          "initial_default": 68.0,
+          "max_relative_change_pct": 10.0,
+          "min_acceptable": 61.2,
+          "max_acceptable": 74.8
+        },
+        "O2": { "max": 25.0 },
+        "CO2": { "max": 25.0 },
+        "Overall_Acceptability": { "min": 5.0 }
+      },
       "thresholds": {
         "pH": {
           "normal": { "min": 6.2, "max": 6.8 },
@@ -104,6 +118,14 @@
       "is_confirmed": false,
       "requires_client_approval": true,
       "f0_applicable": false,
+      "acceptance_rules": {
+        "PV": { "max": 10.0 },
+        "TPC": { "max": 5.0 },
+        "pH": { "min": 4.9 },
+        "O2": { "max": 25.0 },
+        "CO2": { "max": 25.0 },
+        "Overall_Acceptability": { "min": 5.0 }
+      },
       "thresholds": {
         "pH": {
           "normal": { "min": 5.5, "max": 7.0 },
