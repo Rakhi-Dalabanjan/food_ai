@@ -10,9 +10,15 @@ uploads/
 *.db
 
 # Models
-models/*.pkl
-models/*.joblib
-models/*.h5
+*.pkl
+*.joblib
+*.h5
+models/
+!models/
+!models/.gitkeep
+
+# Output exports
+shelf_life_predictions_*.csv
 
 # Frontend
 frontend/node_modules/
